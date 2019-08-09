@@ -29,4 +29,5 @@ clasp push
 ## Reference
 
 For more informantion, please check this following link:
+
 https://medium.com/@sean1093/%E4%BD%BF%E7%94%A8-clasp-%E8%BC%95%E9%AC%86%E4%BD%BF%E7%94%A8-typescript-%E9%96%8B%E7%99%BC-google-apps-script-b93b60e93292
