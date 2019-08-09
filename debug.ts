@@ -1,7 +1,7 @@
 import lineService from './lineService';
 
 import doPost from './app';
-import { CONFIG_DEBUG } from './config';
+import CONFIG from './config';
 
 function test_post() {
   const data = {
@@ -11,7 +11,7 @@ function test_post() {
               text: 'woody'
             },
             source: {
-              userId: CONFIG_DEBUG.USERID
+              userId: CONFIG.CONFIG_DEBUG.USERID
             }
           }
         ]
@@ -27,7 +27,7 @@ function test_post() {
 function test_send() {
   var messageConfig = {
     type: 'push',
-    to: CONFIG_DEBUG.USERID,
+    to: CONFIG.CONFIG_DEBUG.USERID,
     messages: [
       {
         'type': 'text',
