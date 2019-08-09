@@ -1,0 +1,26 @@
+{
+  "name": "over-party-lab-chatbot",
+  "version": "1.0.0",
+  "description": "Over party lab chatbot",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sean1093/over-party-lab-chatbot.git"
+  },
+  "keywords": [
+    "chatbot",
+    "linebot"
+  ],
+  "author": "Sean Chou",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sean1093/over-party-lab-chatbot/issues"
+  },
+  "homepage": "https://github.com/sean1093/over-party-lab-chatbot#readme",
+  "dependencies": {
+    "@types/google-apps-script": "0.0.54"
+  }
+}
