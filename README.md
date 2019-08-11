@@ -1,6 +1,8 @@
 # over-party-lab-chatbot
 This is the line chatbot for [Over Party Lab](https://www.instagram.com/over.party.lab/). We are using clasp and typescript to development. 
 
+![logo](image/logo.jpg "logo")
+
 ## Env
 To run on apps script, you need to install clasp and typescript for apps script, it will complie .ts file when you push code to your apps script.
 

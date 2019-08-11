@@ -14,18 +14,10 @@ interface QueryCriteria {
 };
 
 const spreadSheet = SpreadsheetApp.openById(CONFIG.GOOGLE_SHEET.API_KEY);
-const COLUMN_KEY_MAPPING = {
-    index: 1,
-    name: 2,
-    nameen: 3,
-    link: 4,
-    recommandation: 4,
-    detail: 5
-};
 const formatText = text => text && text.trim().toLowerCase();
 
 const sheetService = {
-    query: (params: QueryCriteria) => {
+    query: (params: QueryCriteria): object => {
         logService.log('[sheetService.query] Query data');
         const { select, from, where } = params;
         const sheet = spreadSheet.getSheetByName(from);
@@ -60,7 +52,7 @@ const sheetService = {
         return result;
     },
     getColumnData: (sheet, rowCount, colName) => {
-        const firstCol = COLUMN_KEY_MAPPING[colName];
+        const firstCol = CONFIG.COLUMN_KEY_MAPPING[colName];
         const rawData = sheet.getSheetValues(2, firstCol, rowCount, 1);
         let array = [];
         for(let i = 0; i < rawData.length; i++) {
@@ -90,6 +82,7 @@ const sheetService = {
         const index = insertRow - 2; // start from 0
         const time = timeService.getCurrentTime();
         const { search, user } = params;
+        logService.log([search, user]);
         
         // call setValue api
         range.setValues([[index, search, user, time]]);

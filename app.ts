@@ -60,6 +60,7 @@ const getConfig = {
             messages
         };
     },
+    // return button message to let user feedback
     buttonReply: function(target, nameList, userId, userMessage) { 
         const replyMessages = [];
         const recommandation = target.split(',');
@@ -81,10 +82,10 @@ const getConfig = {
                 "type": "template",
                 "altText": displayText,
                 "template": {
-                "type": "buttons",
-                "title": displayText,
-                "text": WORDING.see_more,
-                "actions": replyMessages
+                    "type": "buttons",
+                    "title": displayText,
+                    "text": WORDING.see_more,
+                    "actions": replyMessages
                 }
             }]
         };  
@@ -113,11 +114,10 @@ const parseLineMessage = (e: any): ReceiveMessage => {
     return null;
 };
 
+// default apps script post method
 export default function doPost(e) {
-    logService.log('[doPost]'); 
-    let config = {};
+    logService.log('[doPost]');
     const { replyToken, userMessage, userId } = parseLineMessage(e);
-    logService.log([userMessage, userId]);
 
     // save user action
     sheetService.save({
@@ -126,22 +126,21 @@ export default function doPost(e) {
     });
 
     // SELECT link, detail FROM DRINK_LIST WHERE name = name OR nameen = name
-    const result = sheetService.query({
+    const searchResult = sheetService.query({
         select: ['link', 'detail'],
         from: 'DRINK_LIST',
         where: {
-        name: userMessage,
-        nameen: userMessage
+            name: userMessage,
+            nameen: userMessage
         }
-    });   
-    let { link, detail } = result;
+    });
 
-    // create normal reply
-    config = getConfig.normalReply(userId, userMessage, link, detail);
-    
+    let config = {};   
+    const { link, detail } = searchResult; 
     if (link == null) {
         // if can't find cocktail, try to recommands
-        // SELECT recommandation FROM ELEMENT_MAPPING WHERE name = name OR nameen = name     
+        // SELECT recommandation FROM ELEMENT_MAPPING WHERE name = name OR nameen = name  
+        logService.log('[doPost] find recommands');   
         const recommands = sheetService.query({
             select: ['recommandation'],
             from: 'ELEMENT_MAPPING',
@@ -151,13 +150,11 @@ export default function doPost(e) {
             }
         });
         
-        logService.log(['recommands', recommands]);
-        if (recommands.recommandation == null) {
-            detail = WORDING.not_found;
-            link = CONFIG.OVERPARTYLAB.IG;       
-            config = getConfig.normalReply(userId, userMessage, link, detail);
+        // if there are nothing to recommand, return default not found wording
+        if (recommands.recommandation == null) {    
+            config = getConfig.normalReply(userId, userMessage, CONFIG.OVERPARTYLAB.IG, WORDING.not_found);
         } else {
-            // ask type
+            // retrun to ask type
             const nameList = sheetService.query({
                 select: ['name'],
                 from: 'DRINK_LIST',
@@ -165,7 +162,10 @@ export default function doPost(e) {
             }); 
             config = getConfig.buttonReply(recommands.recommandation, nameList.name, userId, userMessage);
         }
-    } 
+    } else {
+        // create normal reply
+        config = getConfig.normalReply(userId, userMessage, link, detail);
+    }
     logService.log([config]);
     lineService.pushMsg(config);
 }
