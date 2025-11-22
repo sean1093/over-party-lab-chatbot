@@ -6,26 +6,27 @@ import sheetService from './sheetService';
 import CONFIG from './config';
 import WORDING from './wording';
 
-// interface
+// interfaces
 interface ReceiveMessage {
     replyToken: string;
     userId: string;
     userMessage: string;
-};
+}
 
 interface ReplyMessage {
     type: string;
     to: string;
     messages: Array<Message>;
-};
+}
 
 interface Message {
     type: string;
-    text: string;
+    text?: string;
+    altText?: string;
     template?: object;
-};
+}
 
-const addTextMessage = (msg, content) => {
+const addTextMessage = (msg: Array<Message>, content: string): void => {
     if (content) {
         msg.push({
             'type': 'text',
@@ -35,8 +36,8 @@ const addTextMessage = (msg, content) => {
 }
 
 const getConfig = {
-    singleReply: (id: string, msgs: Array<string> = []):ReplyMessage => {
-        const messages = msgs.map((msg: string) => {
+    singleReply: (id: string, msgs: Array<string> = []): ReplyMessage => {
+        const messages = msgs.map((msg: string): Message => {
             const resultMsg: Message = {
                 type: 'text',
                 text: msg
@@ -49,8 +50,8 @@ const getConfig = {
             messages: messages
         };
     },
-    normalReply: function(to, userMessage, link, detail) {
-        const messages = [];
+    normalReply: (to: string, userMessage: string, link: string, detail: string): ReplyMessage => {
+        const messages: Array<Message> = [];
         addTextMessage(messages, userMessage);
         addTextMessage(messages, detail);
         addTextMessage(messages, link);
@@ -61,20 +62,22 @@ const getConfig = {
         };
     },
     // return button message to let user feedback
-    buttonReply: function(target, nameList, userId, userMessage) { 
-        const replyMessages = [];
-        const recommandation = target.split(',');
-    
+    buttonReply: (target: string, nameList: Array<string>, userId: string, userMessage: string): ReplyMessage => {
+        const replyMessages: Array<any> = [];
+        const recommendation = target.split(',');
+
         // create replyMessages
-        for (let i = 0; i < recommandation.length; i++) {
-            const index = parseInt(recommandation[i]);
-            replyMessages.push({
-                "type": "message",
-                "label": nameList[index],
-                "text": nameList[index]
-            });
+        for (let i = 0; i < recommendation.length; i++) {
+            const index = parseInt(recommendation[i]);
+            if (nameList[index]) {
+                replyMessages.push({
+                    "type": "message",
+                    "label": nameList[index],
+                    "text": nameList[index]
+                });
+            }
         }
-        const displayText = WORDING.recommandation_head + userMessage + WORDING.recommandation_tail;
+        const displayText = WORDING.recommendation_head + userMessage + WORDING.recommendation_tail;
         return {
             type: 'push',
             to: userId,
@@ -88,84 +91,99 @@ const getConfig = {
                     "actions": replyMessages
                 }
             }]
-        };  
+        };
     }
 };
 
-const parseLineMessage = (e: any): ReceiveMessage => {
-    if (e && e.postData && e.postData.contents) {
-        // convet message to JSON format
-        const msg = JSON.parse(e.postData.contents);
-        const event = msg.events[0];
-        if (event) {
-            const {
-                replyToken,
-                message: { text: userMessage },
-                source: { userId }
-            } = event;
-            const receiveMessage: ReceiveMessage = {
-                replyToken,
-                userId,
-                userMessage
-            };
-            return receiveMessage;
+const parseLineMessage = (e: any): ReceiveMessage | null => {
+    try {
+        if (e && e.postData && e.postData.contents) {
+            // convert message to JSON format
+            const msg = JSON.parse(e.postData.contents);
+            const event = msg.events[0];
+            if (event && event.message && event.source) {
+                const {
+                    replyToken,
+                    message: { text: userMessage },
+                    source: { userId }
+                } = event;
+                const receiveMessage: ReceiveMessage = {
+                    replyToken,
+                    userId,
+                    userMessage
+                };
+                return receiveMessage;
+            }
         }
+    } catch (error) {
+        logService.log('[parseLineMessage] Error: ' + error.message);
     }
     return null;
 };
 
 // default apps script post method
-export default function doPost(e) {
-    logService.log('[doPost]');
-    const { replyToken, userMessage, userId } = parseLineMessage(e);
+export default function doPost(e: any): void {
+    try {
+        logService.log('[doPost]');
+        const parsedMessage = parseLineMessage(e);
 
-    // save user action
-    sheetService.save({
-        search: userMessage,
-        user: userId
-    });
-
-    // SELECT link, detail FROM DRINK_LIST WHERE name = name OR nameen = name
-    const searchResult = sheetService.query({
-        select: ['link', 'detail'],
-        from: 'DRINK_LIST',
-        where: {
-            name: userMessage,
-            nameen: userMessage
+        if (!parsedMessage) {
+            logService.log('[doPost] Invalid message format');
+            return;
         }
-    });
 
-    let config = {};   
-    const { link, detail } = searchResult; 
-    if (link == null) {
-        // if can't find cocktail, try to recommands
-        // SELECT recommandation FROM ELEMENT_MAPPING WHERE name = name OR nameen = name  
-        logService.log('[doPost] find recommands');   
-        const recommands = sheetService.query({
-            select: ['recommandation'],
-            from: 'ELEMENT_MAPPING',
+        const { replyToken, userMessage, userId } = parsedMessage;
+
+        // save user action
+        sheetService.save({
+            search: userMessage,
+            user: userId
+        });
+
+        // SELECT link, detail FROM DRINK_LIST WHERE name = name OR nameen = name
+        const searchResult: any = sheetService.query({
+            select: ['link', 'detail'],
+            from: 'DRINK_LIST',
             where: {
                 name: userMessage,
                 nameen: userMessage
             }
         });
-        
-        // if there are nothing to recommand, return default not found wording
-        if (recommands.recommandation == null) {    
-            config = getConfig.normalReply(userId, userMessage, CONFIG.OVERPARTYLAB.IG, WORDING.not_found);
+
+        let config: ReplyMessage;
+        const { link, detail } = searchResult;
+        if (link == null) {
+            // if can't find cocktail, try to recommend
+            // SELECT recommendation FROM ELEMENT_MAPPING WHERE name = name OR nameen = name
+            logService.log('[doPost] find recommendations');
+            const recommendations: any = sheetService.query({
+                select: ['recommendation'],
+                from: 'ELEMENT_MAPPING',
+                where: {
+                    name: userMessage,
+                    nameen: userMessage
+                }
+            });
+
+            // if there are nothing to recommend, return default not found wording
+            if (recommendations.recommendation == null) {
+                config = getConfig.normalReply(userId, userMessage, CONFIG.OVERPARTYLAB.IG, WORDING.not_found);
+            } else {
+                // return to ask type
+                const nameList: any = sheetService.query({
+                    select: ['name'],
+                    from: 'DRINK_LIST',
+                    where: {}
+                });
+                config = getConfig.buttonReply(recommendations.recommendation, nameList.name, userId, userMessage);
+            }
         } else {
-            // retrun to ask type
-            const nameList = sheetService.query({
-                select: ['name'],
-                from: 'DRINK_LIST',
-                where: {}
-            }); 
-            config = getConfig.buttonReply(recommands.recommandation, nameList.name, userId, userMessage);
+            // create normal reply
+            config = getConfig.normalReply(userId, userMessage, link, detail);
         }
-    } else {
-        // create normal reply
-        config = getConfig.normalReply(userId, userMessage, link, detail);
+        logService.log([config]);
+        lineService.pushMsg(config);
+    } catch (error) {
+        logService.log('[doPost] Error: ' + error.message);
     }
-    logService.log([config]);
-    lineService.pushMsg(config);
 }
