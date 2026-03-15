@@ -32,7 +32,7 @@
     "@types/google-apps-script": "^1.0.83"
   },
   "devDependencies": {
-    "@google/clasp": "^2.4.2",
+    "@google/clasp": "^3.3.0",
     "typescript": "^5.7.2"
   },
   "engines": {
