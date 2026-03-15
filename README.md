@@ -1,48 +1,138 @@
-# Over Party Lab Chatbot
+<div align="center">
 
-A LINE chatbot built with Google Apps Script and TypeScript for [Over Party Lab](https://www.instagram.com/over.party.lab/). This bot helps users search for cocktail recipes and recommendations through LINE Messaging API.
+# Over Party Lab Chatbot
 
 ![logo](image/logo.jpg "logo")
 
+**An intelligent LINE chatbot for cocktail discovery and recommendations**
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-enabled-green.svg)](https://developers.google.com/apps-script)
+[![LINE Messaging API](https://img.shields.io/badge/LINE-Messaging%20API-00C300.svg)](https://developers.line.biz/)
+
+[Features](#features) • [Quick Start](#quick-start) • [Documentation](#installation) • [Contributing](#contributing)
+
+</div>
+
+---
+
+## Overview
+
+Over Party Lab Chatbot is a production-ready LINE messaging bot built for [Over Party Lab](https://www.instagram.com/over.party.lab/), leveraging Google Apps Script and TypeScript to deliver an interactive cocktail discovery experience. The bot intelligently searches cocktail recipes and provides personalized recommendations based on ingredients.
 
 ## Features
 
-- **Cocktail Search**: Query cocktail recipes by name (English or Chinese)
-- **Smart Recommendations**: Get ingredient-based cocktail suggestions when exact match is not found
-- **Interactive Buttons**: User-friendly button templates for browsing recommendations
-- **User Activity Tracking**: Logs user interactions to Google Sheets for analytics
-- **Automated Deployment**: Use clasp for seamless Google Apps Script deployment
+### Core Capabilities
+- 🔍 **Multilingual Search**: Query cocktail recipes in English or Chinese with fuzzy matching
+- 🎯 **Smart Recommendations**: AI-powered ingredient-based suggestions when exact matches aren't found
+- 🎨 **Rich Interactive UI**: Button templates and carousel cards for enhanced user experience
+- 📊 **Analytics Integration**: Comprehensive user interaction logging to Google Sheets
+- 🚀 **Serverless Architecture**: Zero-maintenance deployment with Google Apps Script
+
+### Technical Highlights
+- Type-safe development with TypeScript
+- Modular service architecture for maintainability
+- Automated deployment pipeline with clasp
+- Real-time webhook integration with LINE Messaging API
+- Scalable data storage with Google Sheets
 
 ## Tech Stack
 
-- **Runtime**: Google Apps Script
-- **Language**: TypeScript
-- **Messaging Platform**: LINE Messaging API
-- **Data Storage**: Google Sheets
-- **Development Tools**: clasp (Command Line Apps Script Projects)
+| Category | Technology |
+|----------|-----------|
+| **Runtime** | Google Apps Script |
+| **Language** | TypeScript 5.7+ |
+| **Messaging Platform** | LINE Messaging API |
+| **Data Storage** | Google Sheets |
+| **Build Tool** | clasp (Command Line Apps Script Projects) |
+| **Type Definitions** | @types/google-apps-script |
 
 ## Architecture
 
+The bot follows a serverless, event-driven architecture:
+
 ```
-┌─────────────┐      ┌──────────────────┐      ┌─────────────┐
-│  LINE User  │─────▶│  Google Apps     │─────▶│   Google    │
-│             │◀─────│  Script (Bot)    │◀─────│   Sheets    │
-└─────────────┘      └──────────────────┘      └─────────────┘
-                              │
-                              │ Data lookup
-                              ▼
-                     Cocktail & Element
-                        Mapping Data
+┌─────────────────┐
+│   LINE User     │
+│   (Client)      │
+└────────┬────────┘
+         │ Message
+         ▼
+┌─────────────────────────────────────────┐
+│         LINE Messaging API              │
+│         (Webhook Trigger)               │
+└────────┬────────────────────────────────┘
+         │ HTTP POST
+         ▼
+┌─────────────────────────────────────────┐
+│     Google Apps Script (Server)         │
+│  ┌─────────────────────────────────┐   │
+│  │  doPost() - Webhook Handler     │   │
+│  └──────────┬──────────────────────┘   │
+│             │                            │
+│  ┌──────────▼──────────┐                │
+│  │  Message Processing │                │
+│  │  - Parse input      │                │
+│  │  - Search logic     │                │
+│  │  - Response builder │                │
+│  └──────────┬──────────┘                │
+│             │                            │
+│  ┌──────────▼──────────┐                │
+│  │  Service Layer      │                │
+│  │  - lineService      │                │
+│  │  - sheetService     │                │
+│  │  - logService       │                │
+│  └──────────┬──────────┘                │
+└─────────────┼──────────────────────────┘
+              │
+              ▼
+┌──────────────────────────────────────────┐
+│        Google Sheets (Database)          │
+│  ┌────────────┐  ┌──────────────────┐   │
+│  │ DRINK_LIST │  │ ELEMENT_MAPPING  │   │
+│  └────────────┘  └──────────────────┘   │
+│  ┌────────────┐                          │
+│  │USER_ACTION │  (Analytics)             │
+│  └────────────┘                          │
+└──────────────────────────────────────────┘
 ```
 
 ## Prerequisites
 
-- Node.js v12.0.0 or later
-- npm or yarn
-- Google Account
-- LINE Developer Account
-- LINE Messaging API Channel
+Before you begin, ensure you have the following:
+
+- **Node.js**: v12.0.0 or later ([Download](https://nodejs.org/))
+- **Package Manager**: npm (comes with Node.js) or yarn
+- **Google Account**: For Google Apps Script and Sheets access
+- **LINE Developer Account**: [Register here](https://developers.line.biz/)
+- **LINE Messaging API Channel**: [Create a channel](https://developers.line.biz/console/)
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/sean1093/over-party-lab-chatbot.git
+cd over-party-lab-chatbot
+
+# Install dependencies
+npm install
+
+# Install clasp globally
+npm install -g @google/clasp
+
+# Login to Google Account
+clasp login
+
+# Create config file
+cp config.ts.example config.ts
+# Edit config.ts with your credentials
+
+# Deploy to Google Apps Script
+clasp create --type webapp --title "Over Party Lab Chatbot"
+clasp push
+clasp deploy
+```
 
 ## Installation
 
@@ -71,28 +161,33 @@ clasp clone <SCRIPT_ID>
 
 ### 3. Configure Environment
 
-Create a `config.ts` file in the root directory (see `config.ts.example` for template):
+Create a `config.ts` file in the root directory with your credentials:
 
 ```typescript
 const CONFIG = {
   LINE: {
+    // Get this from LINE Developers Console > Your Channel > Messaging API
     CHANNEL_ACCESS_TOKEN: 'YOUR_LINE_CHANNEL_ACCESS_TOKEN',
     URL_LINE: 'https://api.line.me/v2/bot/message/'
   },
   GOOGLE_SHEET: {
+    // Your Google Sheet ID (from the spreadsheet URL)
+    // https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit
     API_KEY: 'YOUR_GOOGLE_SHEET_ID'
   },
   COLUMN_KEY_MAPPING: {
-    name: 1,
-    nameen: 2,
-    link: 3,
-    detail: 4,
-    recommendation: 5
+    name: 1,          // Chinese name column
+    nameen: 2,        // English name column
+    link: 3,          // Recipe link column
+    detail: 4,        // Cocktail details column
+    recommendation: 5 // Recommendation column
   },
   OVERPARTYLAB: {
     IG: 'https://www.instagram.com/over.party.lab/'
   },
   CONFIG_DEBUG: {
+    // Your LINE User ID for testing (optional)
+    // Get it by sending a message to the bot and checking webhook logs
     USERID: 'YOUR_LINE_USER_ID_FOR_TESTING'
   }
 };
@@ -100,16 +195,43 @@ const CONFIG = {
 export default CONFIG;
 ```
 
+> **Note**: Never commit `config.ts` to version control. It's already in `.gitignore`.
+
 ### 4. Setup Google Sheets
 
-Create a Google Sheet with the following tabs:
+1. Create a new Google Sheet
+2. Create three tabs with the following structure:
 
-- **DRINK_LIST**: Contains cocktail data
-  - Columns: `name`, `nameen`, `link`, `detail`
-- **ELEMENT_MAPPING**: Contains ingredient recommendations
-  - Columns: `name`, `nameen`, `recommendation`
-- **USER_ACTION**: Logs user interactions
-  - Columns: `index`, `search`, `user`, `time`
+#### Tab 1: DRINK_LIST
+Stores cocktail recipes and information.
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| name | Text | Chinese cocktail name | 瑪格麗特 |
+| nameen | Text | English cocktail name | Margarita |
+| link | URL | Recipe link | https://... |
+| detail | Text | Cocktail description | 經典龍舌蘭調酒... |
+
+#### Tab 2: ELEMENT_MAPPING
+Maps ingredients to recommended cocktails.
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| name | Text | Chinese ingredient name | 龍舌蘭 |
+| nameen | Text | English ingredient name | Tequila |
+| recommendation | Text | Recommended cocktail names (comma-separated) | 瑪格麗特,龍舌蘭日出 |
+
+#### Tab 3: USER_ACTION
+Automatically logs user interactions (no manual setup needed).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| index | Number | Auto-increment ID |
+| search | Text | User search query |
+| user | Text | LINE User ID |
+| time | Datetime | Timestamp |
+
+3. Copy the Google Sheet ID from the URL and add it to your `config.ts`
 
 ### 5. Deploy
 
@@ -123,122 +245,410 @@ clasp deploy
 
 ### 6. Configure LINE Webhook
 
-1. Get your web app URL from Google Apps Script
-2. Go to LINE Developers Console
-3. Set webhook URL to your deployed Google Apps Script URL
-4. Enable webhook
+1. After deployment, get your web app URL:
+   ```bash
+   clasp deploy
+   # Copy the Web app URL from the output
+   ```
+
+2. Configure LINE Messaging API:
+   - Go to [LINE Developers Console](https://developers.line.biz/console/)
+   - Select your Messaging API channel
+   - Navigate to **Messaging API** tab
+   - Set **Webhook URL** to your Google Apps Script web app URL
+   - Enable **Use webhook**
+   - Disable **Auto-reply messages** (optional, recommended)
+
+3. Verify webhook:
+   - Click **Verify** button in LINE Console
+   - Should return success message
 
 ## Development
 
-### Push & Pull Code
+### Available Scripts
 
 ```bash
-# Pull latest code from Google Apps Script
-clasp pull
+# Push code to Google Apps Script
+npm run push
 
-# Push local changes to Google Apps Script
-clasp push
+# Pull code from Google Apps Script
+npm run pull
 
-# Watch for changes and auto-push
-clasp push --watch
+# Deploy new version
+npm run deploy
+
+# Watch mode - auto-push on file changes
+npm run watch
 ```
+
+### Development Workflow
+
+1. **Make local changes** to TypeScript files
+2. **Push to Google Apps Script**:
+   ```bash
+   npm run push
+   ```
+3. **Test in LINE**: Send messages to your bot
+4. **View logs**: Check Google Apps Script editor > Executions
 
 ### Testing
 
-Use the debug functions in `debug.ts`:
+The project includes testing utilities in `debug.ts`:
 
 ```typescript
-// Test POST endpoint
-test_post();
+// Test webhook POST endpoint
+function test_post() {
+  // Simulates a LINE webhook message
+  // Useful for testing message parsing and response logic
+}
 
-// Test sending message
-test_send();
+// Test sending messages
+function test_send() {
+  // Tests LINE API message delivery
+  // Requires CONFIG_DEBUG.USERID to be set
+}
 ```
+
+**Run tests**:
+1. Open Google Apps Script editor
+2. Select the test function
+3. Click Run
+4. Check Execution log for results
+
+### Local Development Tips
+
+- **Type checking**: Run `tsc --noEmit` to check for TypeScript errors before pushing
+- **Auto-formatting**: Use Prettier or similar formatter for consistent code style
+- **Watch mode**: Use `npm run watch` during active development for automatic deployment
 
 ## Project Structure
 
 ```
-.
-├── app.ts              # Main application logic and webhook handler
-├── lineService.ts      # LINE Messaging API service
-├── sheetService.ts     # Google Sheets operations
-├── logService.ts       # Logging utility
-├── timeService.ts      # Time formatting utility
-├── wording.ts          # Response message templates
-├── debug.ts            # Testing utilities
-├── config.ts           # Configuration (gitignored)
-├── appsscript.json     # Apps Script manifest
-├── package.json        # Node.js dependencies
-└── tsconfig.json       # TypeScript configuration
+over-party-lab-chatbot/
+│
+├── 📄 Core Application Files
+│   ├── app.ts                 # Main webhook handler and message processing logic
+│   ├── config.ts              # Configuration file (not in repo, see config.ts.example)
+│   └── appsscript.json        # Google Apps Script manifest
+│
+├── 🔧 Service Layer
+│   ├── lineService.ts         # LINE Messaging API integration
+│   ├── sheetService.ts        # Google Sheets data operations
+│   ├── logService.ts          # User activity logging
+│   └── timeService.ts         # Timestamp formatting utilities
+│
+├── 📝 Resources
+│   ├── wording.ts             # Message templates and response texts
+│   └── debug.ts               # Testing and debugging utilities
+│
+├── ⚙️ Configuration
+│   ├── package.json           # Node.js dependencies and scripts
+│   ├── tsconfig.json          # TypeScript compiler configuration
+│   ├── .claspignore           # Files to exclude from clasp push
+│   └── .gitignore             # Git ignore rules
+│
+└── 📁 Other
+    └── image/                 # Project assets (logo, screenshots)
 ```
+
+### Key Files Explained
+
+| File | Purpose |
+|------|---------|
+| `app.ts` | Entry point with `doPost()` webhook handler |
+| `lineService.ts` | Handles LINE API calls (push messages, buttons, carousels) |
+| `sheetService.ts` | CRUD operations for Google Sheets data |
+| `wording.ts` | Centralized message templates for consistency |
+| `debug.ts` | Testing functions for local development |
 
 ## How It Works
 
-1. **User sends message** via LINE
-2. **Webhook triggers** `doPost()` function in Google Apps Script
-3. **Bot parses message** and searches Google Sheets for matching cocktail
-4. **If found**: Returns cocktail details and link
-5. **If not found**: Searches for ingredient-based recommendations
-6. **Bot responds** with text or button template messages
-7. **User action logged** to Google Sheets
+### Message Flow
+
+```
+1. User sends message (e.g., "Margarita")
+   ↓
+2. LINE Platform receives message
+   ↓
+3. Webhook POST → doPost(e) in app.ts
+   ↓
+4. Parse message and extract search query
+   ↓
+5. Search DRINK_LIST sheet for exact match
+   ↓
+6a. ✅ Match found                    6b. ❌ No match found
+    → Return cocktail details              → Search ELEMENT_MAPPING
+    → Include recipe link                  → Find ingredient recommendations
+    → Send text message                    → Send button template with options
+   ↓
+7. Log user action to USER_ACTION sheet
+   ↓
+8. Response delivered to user
+```
+
+### Search Logic
+
+The bot implements a two-tier search strategy:
+
+1. **Exact Match Search** (Primary):
+   - Searches both `name` (Chinese) and `nameen` (English) columns
+   - Case-insensitive matching
+   - Returns full cocktail details with recipe link
+
+2. **Ingredient-Based Recommendations** (Fallback):
+   - Searches ELEMENT_MAPPING for partial matches
+   - Returns up to 5 recommended cocktails
+   - Presented as interactive buttons for easy selection
 
 ## API Reference
 
-### Main Functions
+### Core Functions
 
-- `doPost(e)`: Webhook handler for LINE messages
-- `lineService.pushMsg(config)`: Send messages to LINE
-- `sheetService.query(params)`: Query Google Sheets data
-- `sheetService.save(params)`: Save user actions
+#### `doPost(e: GoogleAppsScript.Events.DoPost)`
+Webhook handler that processes incoming LINE messages.
+
+```typescript
+function doPost(e: GoogleAppsScript.Events.DoPost): GoogleAppsScript.Content.TextOutput
+```
+
+**Parameters**:
+- `e`: Event object containing the POST request data from LINE
+
+**Returns**: TextOutput with status 200
+
+---
+
+#### `lineService.pushMsg(config: PushMessageConfig)`
+Sends messages to LINE users via Messaging API.
+
+```typescript
+interface PushMessageConfig {
+  to: string;           // LINE User ID
+  messages: Message[];  // Array of message objects
+}
+```
+
+---
+
+#### `sheetService.query(params: QueryParams)`
+Queries Google Sheets for cocktail or ingredient data.
+
+```typescript
+interface QueryParams {
+  sheetName: string;    // Sheet tab name (e.g., 'DRINK_LIST')
+  searchValue: string;  // Search query
+  searchColumn?: number; // Column index to search
+}
+```
+
+---
+
+#### `sheetService.save(params: SaveParams)`
+Logs user actions to the USER_ACTION sheet.
+
+```typescript
+interface SaveParams {
+  search: string;       // User's search query
+  user: string;         // LINE User ID
+  timestamp: string;    // Formatted timestamp
+}
+```
 
 ## Configuration
 
 ### appsscript.json
 
+Configuration for Google Apps Script deployment:
+
 ```json
 {
   "timeZone": "Asia/Hong_Kong",
   "webapp": {
-    "access": "ANYONE_ANONYMOUS",
-    "executeAs": "USER_DEPLOYING"
+    "access": "ANYONE_ANONYMOUS",  // Allow public webhook access
+    "executeAs": "USER_DEPLOYING"  // Run as deploying user
   },
-  "exceptionLogging": "STACKDRIVER"
+  "exceptionLogging": "STACKDRIVER"  // Enable Google Cloud logging
 }
 ```
 
+**Key Settings**:
+- `timeZone`: Adjust for your region (affects timestamp logging)
+- `access`: Must be `ANYONE_ANONYMOUS` for LINE webhook
+- `executeAs`: `USER_DEPLOYING` ensures proper permissions
+
+## Troubleshooting
+
+### Common Issues
+
+#### Webhook Not Receiving Messages
+- ✅ Verify webhook URL is correct in LINE Console
+- ✅ Ensure web app is deployed (not just saved)
+- ✅ Check `access` is set to `ANYONE_ANONYMOUS` in appsscript.json
+- ✅ Test webhook using LINE Console's verification tool
+
+#### "Cannot find module 'config'" Error
+- ✅ Ensure `config.ts` exists in root directory
+- ✅ Copy from `config.ts.example` if missing
+- ✅ Verify `config.ts` is not in `.claspignore`
+
+#### Bot Not Responding
+- ✅ Check Google Apps Script execution logs for errors
+- ✅ Verify LINE Channel Access Token is valid
+- ✅ Confirm Google Sheet ID is correct
+- ✅ Ensure sheet tab names match exactly (case-sensitive)
+
+#### TypeScript Compilation Errors
+```bash
+# Check for errors before pushing
+npx tsc --noEmit
+
+# Common fix: Reinstall dependencies
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### Debugging Tips
+
+1. **View Execution Logs**:
+   - Open Google Apps Script editor
+   - Click **View** > **Executions**
+   - Check recent execution logs for errors
+
+2. **Test Locally**:
+   - Use `debug.ts` functions to test without LINE
+   - Run `test_post()` to simulate webhook
+   - Run `test_send()` to test message sending
+
+3. **Enable Verbose Logging**:
+   - Add `console.log()` statements in your code
+   - View output in Apps Script Executions panel
+
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Here's how you can help:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+### How to Contribute
+
+1. **Fork the repository**
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/over-party-lab-chatbot.git
+   ```
+
+2. **Create a feature branch**
+   ```bash
+   git checkout -b feature/amazing-feature
+   ```
+
+3. **Make your changes**
+   - Follow existing code style
+   - Add comments for complex logic
+   - Update documentation if needed
+
+4. **Test your changes**
+   - Test locally using debug functions
+   - Ensure no TypeScript errors: `npx tsc --noEmit`
+
+5. **Commit with clear messages**
+   ```bash
+   git commit -m "feat: add amazing feature"
+   ```
+   Follow [Conventional Commits](https://www.conventionalcommits.org/)
+
+6. **Push and create Pull Request**
+   ```bash
+   git push origin feature/amazing-feature
+   ```
+
+### Contribution Guidelines
+
+- Write clean, readable code
+- Maintain type safety (avoid `any` types)
+- Add JSDoc comments for public functions
+- Keep dependencies minimal
+- Test thoroughly before submitting PR
+
+### Areas for Contribution
+
+- 🌐 Add more language support
+- 🎨 Improve message templates and UI
+- 📊 Enhanced analytics and reporting
+- 🧪 Add unit tests
+- 📝 Improve documentation
+- 🐛 Bug fixes and performance improvements
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+## FAQ
+
+### Can I use this for other types of data besides cocktails?
+
+Yes! The architecture is generic. Simply modify:
+- Google Sheets structure for your data
+- Search logic in [app.ts](app.ts)
+- Message templates in [wording.ts](wording.ts)
+
+### How much does it cost to run?
+
+**$0** - Both Google Apps Script and LINE Messaging API offer free tiers sufficient for most small to medium bots.
+
+### Can I add image/video responses?
+
+Yes! LINE Messaging API supports rich media. See [LINE Message Types](https://developers.line.biz/en/docs/messaging-api/message-types/) for implementation details.
+
+### How do I scale for more users?
+
+Google Apps Script has daily quotas. For high-traffic bots, consider:
+- Using Google Cloud Functions
+- Implementing caching
+- Optimizing Sheets queries
+- Migrating to a database (Firebase, MongoDB)
+
+### Can I deploy multiple bots from this code?
+
+Yes! Clone the project, use different:
+- LINE channels
+- Google Sheets
+- Apps Script deployments
+
 ## Resources
 
-- [How to create a LINE chatbot using Google Apps Script](https://medium.com/@sean1093/%E5%85%A9%E5%B0%8F%E6%99%82%E6%89%93%E9%80%A0%E7%B0%A1%E5%96%AE-line-chatbot-%E4%BD%BF%E7%94%A8-google-apps-script-google-sheet-api-8fff7372ff3d)
-- [Using clasp and TypeScript to develop Google Apps Script](https://medium.com/@sean1093/%E4%BD%BF%E7%94%A8-clasp-%E8%BC%95%E9%AC%86%E4%BD%BF%E7%94%A8-typescript-%E9%96%8B%E7%99%BC-google-apps-script-b93b60e93292)
-- [LINE Messaging API Documentation](https://developers.line.biz/en/docs/messaging-api/)
-- [Google Apps Script Documentation](https://developers.google.com/apps-script)
-- [clasp Documentation](https://github.com/google/clasp)
+### Tutorials
+- 📝 [How to create a LINE chatbot using Google Apps Script](https://medium.com/@sean1093/%E5%85%A9%E5%B0%8F%E6%99%82%E6%89%93%E9%80%A0%E7%B0%A1%E5%96%AE-line-chatbot-%E4%BD%BF%E7%94%A8-google-apps-script-google-sheet-api-8fff7372ff3d) (Chinese)
+- 📝 [Using clasp and TypeScript to develop Google Apps Script](https://medium.com/@sean1093/%E4%BD%BF%E7%94%A8-clasp-%E8%BC%95%E9%AC%86%E4%BD%BF%E7%94%A8-typescript-%E9%96%8B%E7%99%BC-google-apps-script-b93b60e93292) (Chinese)
+
+### Official Documentation
+- 📚 [LINE Messaging API Documentation](https://developers.line.biz/en/docs/messaging-api/)
+- 📚 [Google Apps Script Documentation](https://developers.google.com/apps-script)
+- 📚 [clasp - Command Line Apps Script Projects](https://github.com/google/clasp)
+- 📚 [TypeScript Handbook](https://www.typescriptlang.org/docs/)
+
+### Related Projects
+- [LINE Bot SDK](https://github.com/line/line-bot-sdk-nodejs) - Node.js SDK for LINE
+- [Google Apps Script Samples](https://developers.google.com/apps-script/samples)
 
 ## Author
 
-**Sean Chou** - [GitHub](https://github.com/sean1093)
+**Sean Chou**
+- GitHub: [@sean1093](https://github.com/sean1093)
+- Medium: [@sean1093](https://medium.com/@sean1093)
 
 ## Acknowledgments
 
-- [Over Party Lab](https://www.instagram.com/over.party.lab/) - Cocktail community
-- LINE Messaging API
-- Google Apps Script Platform
+- 🍸 [Over Party Lab](https://www.instagram.com/over.party.lab/) - Cocktail community and inspiration
+- 💚 LINE Corporation - LINE Messaging API
+- ☁️ Google - Apps Script platform and infrastructure
+- 💙 TypeScript Team - Type-safe development tools
+- 🙏 All contributors and users of this project
 
+---
 
+<div align="center">
 
+**[⬆ Back to Top](#over-party-lab-chatbot)**
 
+Made with ❤️ for cocktail enthusiasts
+
+</div>
 
