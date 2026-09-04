@@ -31,7 +31,7 @@
   },
   "homepage": "https://github.com/sean1093/over-party-lab-chatbot#readme",
   "devDependencies": {
-    "@google/clasp": "^3.3.0",
+    "@google/clasp": "^3.4.1",
     "@types/google-apps-script": "^1.0.83",
     "@types/node": "^26.4.1",
     "esbuild": "^0.28.2",
