@@ -6,7 +6,7 @@ import type { Message } from './lineMessage';
 /** Messaging API base URL; the endpoint name ('reply' / 'push') is appended. */
 const API_BASE_URL = 'https://api.line.me/v2/bot/message/';
 
-interface SendResult {
+export interface SendResult {
   ok: boolean;
   status: number;
   body: string;

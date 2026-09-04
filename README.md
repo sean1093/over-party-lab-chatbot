@@ -33,7 +33,8 @@ the cocktails made with it.
   table and offers the cocktails it maps to
 - 🎨 **Buttons template**: up to 4 tappable options, clamped to every Messaging API payload limit so
   a long name or a long message can never make LINE reject the reply
-- 📊 **Search log**: every answered message is appended to a Google Sheet
+- 📊 **Search log**: every answered message is appended to a Google Sheet, once per event even if
+  LINE delivers it twice
 - 💸 **Free to answer**: replies go through the Reply API, which does not count against the LINE
   Official Account's monthly message quota
 - 🔒 **Authenticated webhook**: Apps Script cannot verify `x-line-signature`, so requests are
@@ -647,7 +648,7 @@ Contributions are welcome! Here's how you can help:
 - 🌐 More language support
 - 🎨 Better message templates and UI, e.g. quick replies instead of a 4-button template
 - 📊 Richer analytics
-- 🔁 Redelivery de-duplication ([#31](https://github.com/sean1093/over-party-lab-chatbot/issues/31))
+- ⏱️ Cross-execution caching of the sheet data, if a bigger sheet makes the per-delivery read hurt
 - 📝 Documentation
 - 🐛 Bug fixes and performance improvements
 

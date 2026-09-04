@@ -13,6 +13,7 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
 | Webhook authentication, event filtering, reply flow | `app.ts` |
 | LINE Messaging API client | `lineService.ts` |
 | Message objects and the API's payload limits | `lineMessage.ts` |
+| Remembering handled events, so a duplicate delivery is answered once | `eventDedupe.ts` |
 | Google Sheets access | `sheetService.ts` |
 | Logging | `logService.ts` |
 | Timestamp helper | `timeService.ts` |
@@ -55,6 +56,12 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
 - The Messaging API counts `text` and `altText` in **UTF-16 code units** and `title`, template
   `text`, action `label` and action `text` in **grapheme clusters**. `lineMessage.ts` has one clamp
   per unit; using the wrong one produces a payload the API rejects, and the user gets nothing.
+- The same webhook event can arrive **more than once** — LINE names network routing as a cause, so
+  this is not limited to the redelivery feature — and `webhookEventId` is how to detect it.
+  `eventDedupe.ts` records an id only *after* the event is handled, because a delivery that failed
+  part-way through is exactly what a redelivery exists to retry.
+- `CacheService` holds at most 1,000 items and may evict earlier, so anything built on it is best
+  effort by construction. Say so where it matters instead of implying exactly-once.
 - `Sheet.getLastRow()` returns the position of the last row **with content**, and `appendRow`
   interprets a leading `=` as a formula. Both have bitten this codebase.
 - `console.log` only. On V8 the legacy `Logger.log` reaches the same execution log, so writing to

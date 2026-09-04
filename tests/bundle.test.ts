@@ -6,6 +6,7 @@ import {
   DEFAULT_PROPERTIES,
   USER_ACTION,
   loadBundle,
+  nextWebhookEventId,
   replyTexts,
   textMessageEvent,
   webhookBody,
@@ -1049,5 +1050,273 @@ describe('webhook authentication', () => {
     expect(harness.recorded.calls).toEqual([]);
     expect(harness.recorded.logs).toContain('[doPost] rejected: webhook token mismatch');
     expect(output.content).toBe('{"status":"ok"}');
+  });
+});
+
+describe('duplicate deliveries', () => {
+  const duplicateOf = (id: string, text = '伍迪') =>
+    webhookBody([
+      {
+        type: 'message',
+        webhookEventId: id,
+        deliveryContext: { isRedelivery: true },
+        replyToken: 'reply-token-0001',
+        message: { type: 'text', id: '1', text },
+        source: { type: 'user', userId: 'Uuser0001' },
+      },
+    ]);
+
+  it('answers an event once when the same delivery arrives twice', () => {
+    // Two executions of the same deployment, sharing one script cache.
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache });
+    first.doPost(duplicateOf(id));
+    expect(first.recorded.fetches).toHaveLength(1);
+    expect(first.recorded.writes).toHaveLength(1);
+
+    const second = loadBundle({ cache });
+    second.doPost(duplicateOf(id));
+
+    // LINE: "the same webhook event may be sent to your bot server more than
+    // once ... To detect duplicates, use webhookEventId."
+    expect(second.recorded.fetches).toHaveLength(0);
+    expect(second.recorded.writes).toHaveLength(0);
+    expect(second.recorded.logs).toContain(`[doPost] already handled ${id}`);
+  });
+
+  it('logs a redelivery so the cause is visible in the execution log', () => {
+    const harness = loadBundle();
+    const id = nextWebhookEventId();
+    harness.doPost(duplicateOf(id));
+
+    expect(harness.recorded.logs).toContain(`[doPost] redelivery of ${id}`);
+  });
+
+  it('skips a repeat inside a single delivery too', () => {
+    const harness = loadBundle();
+    const id = nextWebhookEventId();
+    const event = {
+      type: 'message',
+      webhookEventId: id,
+      deliveryContext: { isRedelivery: false },
+      replyToken: 'reply-token-0001',
+      message: { type: 'text', id: '1', text: '伍迪' },
+      source: { type: 'user', userId: 'Uuser0001' },
+    };
+    harness.doPost(webhookBody([event, event]));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.writes).toHaveLength(1);
+  });
+
+  it('answers distinct events in the same delivery', () => {
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        {
+          type: 'message',
+          webhookEventId: nextWebhookEventId(),
+          replyToken: 'token-a',
+          message: { type: 'text', id: '1', text: '伍迪' },
+          source: { type: 'user', userId: 'Uuser0001' },
+        },
+        {
+          type: 'message',
+          webhookEventId: nextWebhookEventId(),
+          replyToken: 'token-b',
+          message: { type: 'text', id: '2', text: '白色俄羅斯' },
+          source: { type: 'user', userId: 'Uuser0002' },
+        },
+      ])
+    );
+
+    expect(harness.recorded.fetches).toHaveLength(2);
+  });
+
+  it('remembers the id under a namespaced key with an hour of retention', () => {
+    const harness = loadBundle();
+    const id = nextWebhookEventId();
+    harness.doPost(duplicateOf(id));
+
+    expect(harness.recorded.cachePuts).toEqual([
+      { key: `webhookEvent:${id}`, value: '1', ttl: 3600 },
+    ]);
+  });
+
+  it('records the id only after the event has been handled', () => {
+    // A delivery that failed part-way through is exactly what redelivery is
+    // for, so it must stay retryable. Here the first attempt dies on a missing
+    // script property; the retry, once it is set, has to answer.
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const broken = loadBundle({
+      cache,
+      properties: {
+        LINE_CHANNEL_ACCESS_TOKEN: 'test-token',
+        WEBHOOK_TOKEN: DEFAULT_PROPERTIES.WEBHOOK_TOKEN,
+        BOT_USER_ID: DEFAULT_PROPERTIES.BOT_USER_ID,
+      },
+    });
+    expect(() => broken.doPost(duplicateOf(id))).toThrowError(/"SPREADSHEET_ID"/);
+    expect(broken.recorded.cachePuts).toEqual([]);
+
+    const fixed = loadBundle({ cache });
+    fixed.doPost(duplicateOf(id));
+
+    expect(fixed.recorded.fetches).toHaveLength(1);
+    expect(replyTexts(fixed.recorded)).toContain('https://example.com/woody');
+  });
+
+  it('answers the event when it carries no id to key on', () => {
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        {
+          type: 'message',
+          replyToken: 'reply-token-0001',
+          message: { type: 'text', id: '1', text: '伍迪' },
+          source: { type: 'user', userId: 'Uuser0001' },
+        },
+      ])
+    );
+
+    // Answering twice beats not answering at all, so no id means no dedupe.
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.cacheGets).toEqual([]);
+    expect(harness.recorded.cachePuts).toEqual([]);
+  });
+
+  it('still answers when the cache itself is unavailable', () => {
+    const harness = loadBundle({ cacheAvailable: false });
+    harness.doPost(duplicateOf(nextWebhookEventId()));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(
+      harness.recorded.logs.filter((line) => line.startsWith('[eventDedupe] Cache unavailable'))
+    ).toHaveLength(2);
+  });
+});
+
+describe('duplicate deliveries: what counts as handled', () => {
+  const delivery = (id: string) =>
+    webhookBody([
+      {
+        type: 'message',
+        webhookEventId: id,
+        deliveryContext: { isRedelivery: true },
+        replyToken: 'reply-token-0001',
+        message: { type: 'text', id: '1', text: '伍迪' },
+        source: { type: 'user', userId: 'Uuser0001' },
+      },
+    ]);
+
+  it('asks the script cache, not a per-user one', () => {
+    // The web app runs as the deploying user, so the scope is not observable
+    // from behaviour alone — assert the accessor the sources reach for.
+    const harness = loadBundle();
+    harness.doPost(delivery(nextWebhookEventId()));
+
+    expect(new Set(harness.recorded.cacheAccessors)).toEqual(new Set(['script']));
+  });
+
+  it.each([
+    ['a 4xx LINE will reject again', 400],
+    ['an invalid reply token', 403],
+  ])('remembers the event when the reply failed with %s', (_name, responseCode) => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, responseCode, responseBody: '{"message":"nope"}' });
+    first.doPost(delivery(id));
+    expect(first.recorded.cachePuts).toHaveLength(1);
+
+    // Retrying spends another execution on a token LINE has already refused,
+    // and appends another analytics row, for a reply that cannot land.
+    const second = loadBundle({ cache, responseCode });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(0);
+    expect(second.recorded.writes).toHaveLength(0);
+  });
+
+  it.each([
+    ['a rate limit', 429],
+    ['a LINE server error', 500],
+    ['a bad gateway', 503],
+  ])('keeps the event retryable when the reply failed with %s', (_name, responseCode) => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, responseCode });
+    first.doPost(delivery(id));
+
+    expect(first.recorded.cachePuts).toEqual([]);
+    expect(first.recorded.logs).toContain(`[doPost] unanswered, still retryable: ${id}`);
+
+    // A duplicate is the only vehicle left for answering this user, since the
+    // webhook itself is acknowledged with a 200.
+    const second = loadBundle({ cache });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(1);
+    expect(replyTexts(second.recorded)).toContain('https://example.com/woody');
+  });
+
+  it('keeps the event retryable when the request never reached LINE', () => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, fetchThrows: true });
+    first.doPost(delivery(id));
+
+    // status 0: no HTTP response at all, so nothing is known to have happened.
+    expect(first.recorded.cachePuts).toEqual([]);
+    expect(first.recorded.logs).toContain(`[doPost] unanswered, still retryable: ${id}`);
+
+    const second = loadBundle({ cache });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(1);
+  });
+
+  it('does not treat a blank id as a shared key', () => {
+    // Three users, three whitespace-only ids: without trimming, the second and
+    // third are refused as duplicates of the first.
+    const cache: Record<string, string> = {};
+    for (const [id, userId] of [[' ', 'Uone'], ['  ', 'Utwo'], [' ', 'Uthree']]) {
+      const harness = loadBundle({ cache });
+      harness.doPost(
+        webhookBody([
+          {
+            type: 'message',
+            webhookEventId: id,
+            replyToken: 'reply-token-0001',
+            message: { type: 'text', id: '1', text: '伍迪' },
+            source: { type: 'user', userId },
+          },
+        ])
+      );
+      expect(harness.recorded.fetches).toHaveLength(1);
+      expect(harness.recorded.cachePuts).toEqual([]);
+    }
+  });
+
+  it('skips dedupe for an id too long to be a cache key, and says so', () => {
+    const harness = loadBundle();
+    const tooLong = 'x'.repeat(238); // 'webhookEvent:' + 238 = 251 > 250
+    harness.doPost(delivery(tooLong));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.cachePuts).toEqual([]);
+    expect(harness.recorded.logs).toContain('[eventDedupe] Id too long to remember: 238 chars');
+  });
+
+  it('answers rather than refusing when a cache miss is not reported as null', () => {
+    // The documented contract is String|null, but guessing wrong here is the
+    // one mistake that produces silence, so the check is a truthiness test.
+    const harness = loadBundle({ cache: Object.create({ 'webhookEvent:ghost': '1' }) });
+    harness.doPost(delivery(nextWebhookEventId()));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
   });
 });
