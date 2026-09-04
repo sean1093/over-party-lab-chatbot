@@ -2,12 +2,14 @@
   "name": "over-party-lab-chatbot",
   "version": "1.0.0",
   "description": "A LINE chatbot built with Google Apps Script and TypeScript for Over Party Lab",
-  "main": "app.ts",
+  "main": "main.ts",
   "scripts": {
-    "push": "clasp push",
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "push": "npm run build && clasp push",
     "pull": "clasp pull",
-    "deploy": "clasp deploy",
-    "watch": "clasp push --watch"
+    "deploy": "npm run build && clasp push && clasp deploy"
   },
   "repository": {
     "type": "git",
@@ -28,14 +30,13 @@
     "url": "https://github.com/sean1093/over-party-lab-chatbot/issues"
   },
   "homepage": "https://github.com/sean1093/over-party-lab-chatbot#readme",
-  "dependencies": {
-    "@types/google-apps-script": "^1.0.83"
-  },
   "devDependencies": {
     "@google/clasp": "^3.3.0",
+    "@types/google-apps-script": "^1.0.83",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   },
   "engines": {
-    "node": ">=12.0.0"
+    "node": ">=20.0.0"
   }
 }

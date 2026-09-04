@@ -102,7 +102,7 @@ The bot follows a serverless, event-driven architecture:
 
 Before you begin, ensure you have the following:
 
-- **Node.js**: v12.0.0 or later ([Download](https://nodejs.org/))
+- **Node.js**: v20.0.0 or later ([Download](https://nodejs.org/)) — required by clasp 3.x
 - **Package Manager**: npm (comes with Node.js) or yarn
 - **Google Account**: For Google Apps Script and Sheets access
 - **LINE Developer Account**: [Register here](https://developers.line.biz/)
@@ -115,23 +115,21 @@ Before you begin, ensure you have the following:
 git clone https://github.com/sean1093/over-party-lab-chatbot.git
 cd over-party-lab-chatbot
 
-# Install dependencies
+# Install dependencies (clasp is a devDependency, no global install needed)
 npm install
 
-# Install clasp globally
-npm install -g @google/clasp
-
 # Login to Google Account
-clasp login
+npx clasp login
 
-# Create config file
-cp config.ts.example config.ts
-# Edit config.ts with your credentials
+# Create the Apps Script project, then point clasp at the build output
+npx clasp create --type webapp --title "Over Party Lab Chatbot"
+# edit .clasp.json and add: "rootDir": "dist"
 
-# Deploy to Google Apps Script
-clasp create --type webapp --title "Over Party Lab Chatbot"
-clasp push
-clasp deploy
+# Bundle TypeScript -> dist/Code.js and upload
+npm run push
+npx clasp deploy
+
+# Finally, set the secrets as script properties (see step 3 below)
 ```
 
 ## Installation
@@ -139,10 +137,7 @@ clasp deploy
 ### 1. Install Dependencies
 
 ```bash
-# Install clasp globally
-npm install -g @google/clasp
-
-# Install project dependencies
+# Install project dependencies (includes clasp and esbuild)
 npm install
 ```
 
@@ -150,52 +145,34 @@ npm install
 
 ```bash
 # Login to Google Account
-clasp login
+npx clasp login
 
 # Create a new Apps Script project (or clone existing one)
-clasp create --type webapp --title "Over Party Lab Chatbot"
+npx clasp create --type webapp --title "Over Party Lab Chatbot"
 
 # Or clone existing project
-clasp clone <SCRIPT_ID>
+npx clasp clone <SCRIPT_ID>
+
+# Then add "rootDir": "dist" to the generated .clasp.json
 ```
 
 ### 3. Configure Environment
 
-Create a `config.ts` file in the root directory with your credentials:
+Non-secret settings (column mapping, sheet tab names, Instagram link, Messaging API base URL) live in
+[config.ts](config.ts) and are committed. **Secrets are not stored in source** — they are read from Apps
+Script script properties at runtime, so they never end up in the code that `clasp push` uploads.
 
-```typescript
-const CONFIG = {
-  LINE: {
-    // Get this from LINE Developers Console > Your Channel > Messaging API
-    CHANNEL_ACCESS_TOKEN: 'YOUR_LINE_CHANNEL_ACCESS_TOKEN',
-    URL_LINE: 'https://api.line.me/v2/bot/message/'
-  },
-  GOOGLE_SHEET: {
-    // Your Google Sheet ID (from the spreadsheet URL)
-    // https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit
-    API_KEY: 'YOUR_GOOGLE_SHEET_ID'
-  },
-  COLUMN_KEY_MAPPING: {
-    name: 1,          // Chinese name column
-    nameen: 2,        // English name column
-    link: 3,          // Recipe link column
-    detail: 4,        // Cocktail details column
-    recommendation: 5 // Recommendation column
-  },
-  OVERPARTYLAB: {
-    IG: 'https://www.instagram.com/over.party.lab/'
-  },
-  CONFIG_DEBUG: {
-    // Your LINE User ID for testing (optional)
-    // Get it by sending a message to the bot and checking webhook logs
-    USERID: 'YOUR_LINE_USER_ID_FOR_TESTING'
-  }
-};
+Open the Apps Script project (`npx clasp open-script`) and go to
+**Project Settings → Script properties → Add script property**:
 
-export default CONFIG;
-```
+| Property | Value |
+|---|---|
+| `LINE_CHANNEL_ACCESS_TOKEN` | Channel access token from LINE Developers Console → your channel → Messaging API |
+| `SPREADSHEET_ID` | The `{SHEET_ID}` part of `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit` |
+| `DEBUG_USER_ID` | Your own LINE user ID; only used by `test_send()` |
 
-> **Note**: Never commit `config.ts` to version control. It's already in `.gitignore`.
+If a property is missing, the bot fails with `Missing script property "<KEY>"` in the execution log
+instead of silently misbehaving. See [properties.ts](properties.ts).
 
 ### 4. Setup Google Sheets
 
@@ -231,16 +208,20 @@ Automatically logs user interactions (no manual setup needed).
 | user | Text | LINE User ID |
 | time | Datetime | Timestamp |
 
-3. Copy the Google Sheet ID from the URL and add it to your `config.ts`
+3. Copy the Google Sheet ID from the URL into the `SPREADSHEET_ID` script property (step 3)
 
-### 5. Deploy
+### 5. Build and Deploy
+
+clasp 3.x does not transpile TypeScript, so the sources are bundled locally into a single
+`dist/Code.js` (plus a copy of `appsscript.json`) before being uploaded. `.clasp.json` must contain
+`"rootDir": "dist"`; `npm run build` refuses to run if it points anywhere else.
 
 ```bash
-# Push code to Google Apps Script
-clasp push
+# Bundle TypeScript and push the bundle
+npm run push
 
 # Deploy as web app
-clasp deploy
+npx clasp deploy
 ```
 
 ### 6. Configure LINE Webhook
@@ -268,16 +249,22 @@ clasp deploy
 ### Available Scripts
 
 ```bash
-# Push code to Google Apps Script
+# Bundle TypeScript into dist/Code.js
+npm run build
+
+# Type-check without emitting
+npm run typecheck
+
+# Build, then push the bundle to Google Apps Script
 npm run push
 
 # Pull code from Google Apps Script
 npm run pull
 
-# Deploy new version
+# Build, push and deploy a new version
 npm run deploy
 
-# Watch mode - auto-push on file changes
+# Rebuild on change (run `npx clasp push --watch` alongside to auto-upload)
 npm run watch
 ```
 
@@ -317,7 +304,7 @@ function test_send() {
 
 ### Local Development Tips
 
-- **Type checking**: Run `tsc --noEmit` to check for TypeScript errors before pushing
+- **Type checking**: Run `npm run typecheck` to check for TypeScript errors before pushing
 - **Auto-formatting**: Use Prettier or similar formatter for consistent code style
 - **Watch mode**: Use `npm run watch` during active development for automatic deployment
 
@@ -327,8 +314,10 @@ function test_send() {
 over-party-lab-chatbot/
 │
 ├── 📄 Core Application Files
+│   ├── main.ts                # Bundle entry point; exposes the Apps Script globals
 │   ├── app.ts                 # Main webhook handler and message processing logic
-│   ├── config.ts              # Configuration file (not in repo, see config.ts.example)
+│   ├── config.ts              # Non-secret configuration (committed)
+│   ├── properties.ts          # Secret accessors backed by script properties
 │   └── appsscript.json        # Google Apps Script manifest
 │
 ├── 🔧 Service Layer
@@ -344,10 +333,11 @@ over-party-lab-chatbot/
 ├── ⚙️ Configuration
 │   ├── package.json           # Node.js dependencies and scripts
 │   ├── tsconfig.json          # TypeScript compiler configuration
-│   ├── .claspignore           # Files to exclude from clasp push
+│   ├── scripts/build.mjs      # esbuild bundler: sources -> dist/Code.js
 │   └── .gitignore             # Git ignore rules
 │
 └── 📁 Other
+    ├── dist/                  # Build output uploaded by clasp (git-ignored)
     └── image/                 # Project assets (logo, screenshots)
 ```
 
@@ -486,21 +476,25 @@ Configuration for Google Apps Script deployment:
 - ✅ Check `access` is set to `ANYONE_ANONYMOUS` in appsscript.json
 - ✅ Test webhook using LINE Console's verification tool
 
-#### "Cannot find module 'config'" Error
-- ✅ Ensure `config.ts` exists in root directory
-- ✅ Copy from `config.ts.example` if missing
-- ✅ Verify `config.ts` is not in `.claspignore`
+#### `Missing script property "..."` Error
+- ✅ Set `LINE_CHANNEL_ACCESS_TOKEN`, `SPREADSHEET_ID` and `DEBUG_USER_ID` in
+     Apps Script → Project Settings → Script properties (see Configure Environment)
+- ✅ Property names are case-sensitive
+
+#### `SyntaxError: Cannot use import statement outside a module` in Apps Script
+- ✅ You pushed the raw TypeScript sources. Run `npm run push` (which builds first) instead of `clasp push`
+- ✅ Verify `.clasp.json` contains `"rootDir": "dist"`
 
 #### Bot Not Responding
 - ✅ Check Google Apps Script execution logs for errors
 - ✅ Verify LINE Channel Access Token is valid
-- ✅ Confirm Google Sheet ID is correct
+- ✅ Confirm the `SPREADSHEET_ID` script property is correct
 - ✅ Ensure sheet tab names match exactly (case-sensitive)
 
 #### TypeScript Compilation Errors
 ```bash
 # Check for errors before pushing
-npx tsc --noEmit
+npm run typecheck
 
 # Common fix: Reinstall dependencies
 rm -rf node_modules package-lock.json

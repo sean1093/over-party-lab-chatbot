@@ -1,5 +1,6 @@
 import CONFIG from './config';
 import logService from './logService';
+import properties from './properties';
 import timeService from './timeService';
 
 interface SaveData {
@@ -13,7 +14,17 @@ interface QueryCriteria {
     where: Object;
 };
 
-const spreadSheet = SpreadsheetApp.openById(CONFIG.GOOGLE_SHEET.API_KEY);
+/**
+ * Opened lazily: the spreadsheet ID comes from a script property, and reading
+ * it at module load would throw while the bundle is still initialising.
+ */
+let cachedSpreadSheet: GoogleAppsScript.Spreadsheet.Spreadsheet | null = null;
+const getSpreadSheet = (): GoogleAppsScript.Spreadsheet.Spreadsheet => {
+    if (!cachedSpreadSheet) {
+        cachedSpreadSheet = SpreadsheetApp.openById(properties.spreadsheetId());
+    }
+    return cachedSpreadSheet;
+};
 
 /**
  * Formats text to lowercase and trimmed for consistent comparison
@@ -27,7 +38,7 @@ const sheetService = {
         try {
             logService.log('[sheetService.query] Query data');
             const { select, from, where } = params;
-            const sheet = spreadSheet.getSheetByName(from);
+            const sheet = getSpreadSheet().getSheetByName(from);
 
             if (!sheet) {
                 logService.log(`[sheetService.query] Error: Sheet "${from}" not found`);
@@ -102,8 +113,8 @@ const sheetService = {
     save: (params: SaveData): void => {
         try {
             logService.log('[sheetService.save] Save user action');
-            const SHEET_NAME_USER = 'USER_ACTION';
-            const userActionSheet = spreadSheet.getSheetByName(SHEET_NAME_USER);
+            const SHEET_NAME_USER = CONFIG.SHEET_NAMES.USER_ACTION;
+            const userActionSheet = getSpreadSheet().getSheetByName(SHEET_NAME_USER);
 
             if (!userActionSheet) {
                 logService.log(`[sheetService.save] Error: Sheet "${SHEET_NAME_USER}" not found`);

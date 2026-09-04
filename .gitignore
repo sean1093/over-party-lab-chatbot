@@ -58,8 +58,7 @@ Thumbs.db
 # clasp
 .clasp.json
 
-# Config (contains sensitive information)
-config.ts
+# Secrets live in Apps Script script properties, see properties.ts
 
 # Build artifacts
 dist/

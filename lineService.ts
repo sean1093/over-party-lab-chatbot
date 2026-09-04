@@ -1,5 +1,6 @@
 import logService from './logService';
 import CONFIG from './config';
+import properties from './properties';
 
 interface MessageConfig {
     type: string;
@@ -30,7 +31,7 @@ const lineService = {
             const option = {
                 'headers': {
                     'Content-Type': 'application/json; charset=UTF-8',
-                    'Authorization': 'Bearer ' + CONFIG.LINE.CHANNEL_ACCESS_TOKEN
+                    'Authorization': 'Bearer ' + properties.channelAccessToken()
                 },
                 'method': 'post' as GoogleAppsScript.URL_Fetch.HttpMethod,
                 'payload': JSON.stringify(payload)
