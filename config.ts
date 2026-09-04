@@ -1,16 +1,11 @@
 /**
  * Non-secret configuration.
  *
- * Secrets (channel access token, spreadsheet ID, debug user ID) are NOT stored
- * here — they live in Apps Script's script properties, see `properties.ts`.
- * That keeps this file safe to commit and keeps credentials out of the source
- * that `clasp push` uploads.
+ * Secrets are NOT stored here — they live in Apps Script's script properties,
+ * see `properties.ts`. That keeps this file safe to commit and keeps
+ * credentials out of the source that `clasp push` uploads.
  */
 const CONFIG = {
-  LINE: {
-    // Messaging API base URL; the endpoint name ('reply' / 'push') is appended.
-    URL_LINE: 'https://api.line.me/v2/bot/message/',
-  },
   SHEET_NAMES: {
     DRINK_LIST: 'DRINK_LIST',
     ELEMENT_MAPPING: 'ELEMENT_MAPPING',

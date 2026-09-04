@@ -1,8 +1,10 @@
 import logService, { errorMessage } from './logService';
-import CONFIG from './config';
 import properties, { isConfigurationError } from './properties';
 import { LINE_LIMITS } from './lineMessage';
 import type { Message } from './lineMessage';
+
+/** Messaging API base URL; the endpoint name ('reply' / 'push') is appended. */
+const API_BASE_URL = 'https://api.line.me/v2/bot/message/';
 
 interface SendResult {
   ok: boolean;
@@ -27,7 +29,7 @@ const request = (endpoint: string, payload: object): SendResult => {
     muteHttpExceptions: true,
   };
 
-  const response = UrlFetchApp.fetch(CONFIG.LINE.URL_LINE + endpoint, options);
+  const response = UrlFetchApp.fetch(API_BASE_URL + endpoint, options);
   const status = response.getResponseCode();
   const body = response.getContentText();
 
