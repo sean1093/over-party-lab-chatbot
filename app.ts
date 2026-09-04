@@ -1,7 +1,8 @@
 // service
-import logService from './logService';
+import logService, { errorMessage } from './logService';
 import lineService from './lineService';
 import sheetService from './sheetService';
+import { isConfigurationError } from './properties';
 // config
 import CONFIG from './config';
 import WORDING from './wording';
@@ -116,7 +117,8 @@ const parseLineMessage = (e: any): ReceiveMessage | null => {
             }
         }
     } catch (error) {
-        logService.log('[parseLineMessage] Error: ' + error.message);
+        if (isConfigurationError(error)) throw error;
+        logService.log('[parseLineMessage] Error: ' + errorMessage(error));
     }
     return null;
 };
@@ -132,7 +134,7 @@ export default function doPost(e: any): void {
             return;
         }
 
-        const { replyToken, userMessage, userId } = parsedMessage;
+        const { userMessage, userId } = parsedMessage;
 
         // save user action
         sheetService.save({
@@ -184,6 +186,8 @@ export default function doPost(e: any): void {
         logService.log([config]);
         lineService.pushMsg(config);
     } catch (error) {
-        logService.log('[doPost] Error: ' + error.message);
+        // Surfaced as a failed execution so a misconfigured deployment is obvious.
+        if (isConfigurationError(error)) throw error;
+        logService.log('[doPost] Error: ' + errorMessage(error));
     }
 }

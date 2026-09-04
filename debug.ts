@@ -8,13 +8,13 @@
 
 import lineService from './lineService';
 import doPost from './app';
-import CONFIG from './config';
+import properties from './properties';
 
 /**
  * Test the doPost function by simulating a LINE webhook event
  * Change the message text to test different scenarios
  */
-function test_post(): void {
+export function test_post(): void {
   const data = {
     events: [
       {
@@ -22,7 +22,7 @@ function test_post(): void {
           text: 'woody'  // Change this to test different cocktail names
         },
         source: {
-          userId: CONFIG.CONFIG_DEBUG.USERID
+          userId: properties.debugUserId()
         },
         replyToken: 'test-reply-token'
       }
@@ -40,10 +40,10 @@ function test_post(): void {
  * Test sending a message directly to LINE
  * Useful for testing the LINE API connection
  */
-function test_send(): void {
+export function test_send(): void {
   const messageConfig = {
     type: 'push',
-    to: CONFIG.CONFIG_DEBUG.USERID,
+    to: properties.debugUserId(),
     messages: [
       {
         'type': 'text',

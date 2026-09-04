@@ -1,5 +1,8 @@
+export const errorMessage = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
+
 const logService = {
-    log: (msg) => {
+    log: (msg: unknown) => {
         if (msg instanceof Array) {
             msg.forEach((e) => {
                 logService.printLog(e);
@@ -8,7 +11,7 @@ const logService = {
             logService.printLog(msg);
         }
     },
-    printLog: (msg) => {
+    printLog: (msg: unknown) => {
         console.log(msg);
         Logger.log(msg);
     }

@@ -1,5 +1,6 @@
-import CONFIG from './config';
-import logService from './logService';
+import CONFIG, { ColumnKey } from './config';
+import logService, { errorMessage } from './logService';
+import properties, { isConfigurationError } from './properties';
 import timeService from './timeService';
 
 interface SaveData {
@@ -8,12 +9,22 @@ interface SaveData {
 };
 
 interface QueryCriteria {
-    select: Array<string>;
+    select: Array<ColumnKey>;
     from: string;
-    where: Object;
+    where: Partial<Record<ColumnKey, string>>;
 };
 
-const spreadSheet = SpreadsheetApp.openById(CONFIG.GOOGLE_SHEET.API_KEY);
+/**
+ * Opened lazily: the spreadsheet ID comes from a script property, and reading
+ * it at module load would throw while the bundle is still initialising.
+ */
+let cachedSpreadSheet: GoogleAppsScript.Spreadsheet.Spreadsheet | null = null;
+const getSpreadSheet = (): GoogleAppsScript.Spreadsheet.Spreadsheet => {
+    if (!cachedSpreadSheet) {
+        cachedSpreadSheet = SpreadsheetApp.openById(properties.spreadsheetId());
+    }
+    return cachedSpreadSheet;
+};
 
 /**
  * Formats text to lowercase and trimmed for consistent comparison
@@ -27,7 +38,7 @@ const sheetService = {
         try {
             logService.log('[sheetService.query] Query data');
             const { select, from, where } = params;
-            const sheet = spreadSheet.getSheetByName(from);
+            const sheet = getSpreadSheet().getSheetByName(from);
 
             if (!sheet) {
                 logService.log(`[sheetService.query] Error: Sheet "${from}" not found`);
@@ -40,9 +51,9 @@ const sheetService = {
 
             if (where && Object.keys(where).length > 0) {
                 let find = -1;
-                for (let i in where) {
+                for (const i of Object.keys(where) as Array<ColumnKey>) {
                     const elementArray = sheetService.getColumnData(sheet, rowCount, i);
-                    const value = formatText(where[i]);
+                    const value = formatText(where[i] as string);
                     find = sheetService.findElement(elementArray, value);
                     if (find !== -1) {
                         break;
@@ -64,7 +75,9 @@ const sheetService = {
             logService.log('[sheetService.query] Query data finish');
             return result;
         } catch (error) {
-            logService.log('[sheetService.query] Error: ' + error.message);
+            // A misconfigured deployment must fail loudly, not answer "not found".
+            if (isConfigurationError(error)) throw error;
+            logService.log('[sheetService.query] Error: ' + errorMessage(error));
             return {};
         }
     },
@@ -75,7 +88,7 @@ const sheetService = {
      * @param colName - Column name as defined in COLUMN_KEY_MAPPING
      * @returns Array of values from the specified column
      */
-    getColumnData: (sheet: GoogleAppsScript.Spreadsheet.Sheet, rowCount: number, colName: string): Array<any> => {
+    getColumnData: (sheet: GoogleAppsScript.Spreadsheet.Sheet, rowCount: number, colName: ColumnKey): Array<any> => {
         const firstCol = CONFIG.COLUMN_KEY_MAPPING[colName];
         const rawData = sheet.getSheetValues(2, firstCol, rowCount, 1);
         let array: Array<any> = [];
@@ -102,8 +115,8 @@ const sheetService = {
     save: (params: SaveData): void => {
         try {
             logService.log('[sheetService.save] Save user action');
-            const SHEET_NAME_USER = 'USER_ACTION';
-            const userActionSheet = spreadSheet.getSheetByName(SHEET_NAME_USER);
+            const SHEET_NAME_USER = CONFIG.SHEET_NAMES.USER_ACTION;
+            const userActionSheet = getSpreadSheet().getSheetByName(SHEET_NAME_USER);
 
             if (!userActionSheet) {
                 logService.log(`[sheetService.save] Error: Sheet "${SHEET_NAME_USER}" not found`);
@@ -125,7 +138,8 @@ const sheetService = {
             range.setValues([[index, search, user, time]]);
             logService.log('[sheetService.save] User action saved successfully');
         } catch (error) {
-            logService.log('[sheetService.save] Error: ' + error.message);
+            if (isConfigurationError(error)) throw error;
+            logService.log('[sheetService.save] Error: ' + errorMessage(error));
         }
     }
 };
