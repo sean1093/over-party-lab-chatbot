@@ -205,7 +205,7 @@ Automatically logs user interactions (no manual setup needed).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| index | Formula | Row number, written as `=ROW()-1` so it stays correct without a read-modify-write |
+| index | Number | 0-based row counter, assigned under a script lock so concurrent deliveries cannot collide |
 | search | Text | User search query (trimmed) |
 | user | Text | LINE User ID; empty for group/room events without one |
 | time | Datetime | Timestamp |

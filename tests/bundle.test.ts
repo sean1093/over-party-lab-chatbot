@@ -171,20 +171,67 @@ describe('doPost: no match', () => {
 });
 
 describe('doPost: analytics', () => {
-  it('appends the row atomically instead of computing the target row', () => {
+  it('appends the row instead of computing the target range', () => {
     const harness = loadBundle({ now: '2026-01-02T03:04:05' });
     harness.doPost(textMessageEvent('伍迪'));
 
-    // `appendRow` resolves the next empty row server-side. The previous
-    // getLastRow-then-setValues let two concurrent deliveries pick the same
-    // row, so the second write overwrote the first.
+    // `appendRow` targets the bottom of the data region server-side, so unlike
+    // the previous getLastRow-then-setValues it cannot overwrite a row another
+    // execution just wrote. The index stays a number: appendRow would treat a
+    // leading "=" as a formula, which renumbers itself when the tab is sorted.
     expect(harness.recorded.writes).toEqual([
       {
         sheet: 'USER_ACTION',
         a1: 'append',
-        values: [['=ROW()-1', '伍迪', 'Uuser0001', '2026-01-02 03:04:05']],
+        values: [[0, '伍迪', 'Uuser0001', '2026-01-02 03:04:05']],
       },
     ]);
+  });
+
+  it('takes and releases the script lock around the write', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.lockAttempts).toEqual([1000]);
+    expect(harness.recorded.lockReleases).toBe(1);
+  });
+
+  it('replies before writing, and holds the lock across the write itself', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('伍迪'));
+
+    // The reply token expires about a minute after the webhook and the write
+    // contends for a script lock, so recording the search must never be what
+    // delays or costs the user their answer. The write has to happen *inside*
+    // the lock, or getLastRow-then-append is not atomic and two deliveries can
+    // resolve the same index again.
+    expect(harness.recorded.calls).toEqual(['read', 'send', 'lock', 'write', 'unlock']);
+  });
+
+  it('still records the search when the lock cannot be taken', () => {
+    const harness = loadBundle({ lockAvailable: false });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    // Losing an analytics row would be worse than a repeated index, and
+    // appendRow cannot overwrite anything either way.
+    expect(harness.recorded.writes).toHaveLength(1);
+    expect(harness.recorded.lockReleases).toBe(0);
+    expect(harness.recorded.logs).toContain(
+      '[sheetService.save] Lock unavailable; index may repeat'
+    );
+  });
+
+  it('numbers each row of a batch in sequence', () => {
+    const harness = loadBundle();
+    const event = (text: string, token: string) => ({
+      type: 'message',
+      replyToken: token,
+      message: { type: 'text', id: '1', text },
+      source: { type: 'user', userId: 'Uuser0001' },
+    });
+    harness.doPost(webhookBody([event('伍迪', 't1'), event('白色俄羅斯', 't2')]));
+
+    expect(harness.recorded.writes.map((write) => write.values[0][0])).toEqual([0, 1]);
   });
 
   it('keeps every row of a batch instead of overwriting the previous one', () => {
@@ -477,6 +524,74 @@ describe('logging', () => {
 });
 
 describe('Sheets round-trips', () => {
+  it('reads only the mapped columns, whatever else the tab holds', () => {
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          // A stray note in column J: reading to getLastColumn() would carry
+          // every intervening cell for every row.
+          ['name', 'nameen', 'link', 'detail', '', '', '', '', '', 'note'],
+          ['伍迪', 'Woody', 'https://example.com/woody', '威士忌基底', '', '', '', '', '', 'x'],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(replyTexts(harness.recorded)).toEqual([
+      '伍迪',
+      '威士忌基底',
+      'https://example.com/woody',
+    ]);
+    expect(harness.recorded.sheetReads).toEqual(['DRINK_LIST']);
+    // 4 mapped columns wide, not out to the stray note in column J.
+    expect(harness.recorded.sheetRanges).toEqual(['DRINK_LIST 1x5 from R2C1']);
+  });
+
+  it('never asks for more columns than the tab actually has', () => {
+    // A user can delete columns, shrinking the grid below the mapped width.
+    // Requesting past the grid throws, the error is swallowed, and every
+    // lookup degrades into "not found".
+    const harness = loadBundle({
+      maxColumns: 4,
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          ['伍迪', 'Woody', 'https://example.com/woody', '威士忌基底'],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.sheetRanges).toEqual(['DRINK_LIST 1x4 from R2C1']);
+    expect(replyTexts(harness.recorded)).toEqual([
+      '伍迪',
+      '威士忌基底',
+      'https://example.com/woody',
+    ]);
+  });
+
+  it('reads nothing from a tab that has no data rows', () => {
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [['name', 'nameen', 'link', 'detail']],
+        ELEMENT_MAPPING: [],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    // An out-of-grid range would throw, be swallowed, and turn every lookup
+    // into "not found" with the cause visible only in the log.
+    expect(
+      harness.recorded.logs.filter((line) => line.includes('[sheetService.findRow] Error'))
+    ).toEqual([]);
+    expect(harness.recorded.logs.filter((line) => line.includes('out of bounds'))).toEqual([]);
+    expect(replyTexts(harness.recorded)).toContain('找不到您要的調酒，不如來逛逛我們的頻道吧！');
+  });
   it('reads each tab once per execution, not once per column', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent('伍迪'));

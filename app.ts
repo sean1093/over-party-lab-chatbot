@@ -172,14 +172,20 @@ const buildReply = (userMessage: string): Message[] => {
     return textMessages(userMessage, WORDING.not_found, CONFIG.OVERPARTYLAB.IG);
 };
 
-/** Answers one text message event. */
+/**
+ * Answers one text message event.
+ *
+ * The reply goes first: the reply token expires about a minute after the
+ * webhook, and the analytics write contends for a script lock. Recording the
+ * search must never be what costs the user their answer.
+ */
 const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent): void => {
-    // save user action
-    sheetService.save({ search: userMessage, user: userId });
-
     const messages = buildReply(userMessage);
     logService.log(messages);
     lineService.reply(replyToken, messages);
+
+    // save user action
+    sheetService.save({ search: userMessage, user: userId });
 };
 
 /**

@@ -27,10 +27,10 @@ const getSpreadSheet = (): GoogleAppsScript.Spreadsheet.Spreadsheet => {
  * Data rows of a tab, read once per execution.
  *
  * Every read is a round trip to the Sheets backend, and a webhook delivery can
- * carry several events, each needing the same two tabs. One
- * `getDataRange().getValues()` per tab per execution replaces one
- * `getSheetValues` call per column per lookup, which is what used to make the
- * cost scale with the number of events instead of the number of tabs.
+ * carry several events, each needing the same two tabs. One read per tab per
+ * execution replaces one `getSheetValues` call per column per lookup, which is
+ * what made the cost scale with the number of events instead of the number of
+ * tabs.
  *
  * An Apps Script execution is a fresh runtime, so this cache lives exactly as
  * long as one request: no staleness window, no eviction to reason about.
@@ -40,6 +40,15 @@ const rowCache: Record<string, string[][]> = {};
 /** Cells arrive as strings, numbers, booleans or Dates; comparisons need text. */
 const asText = (cell: unknown): string =>
     cell === '' || cell === null || cell === undefined ? '' : String(cell);
+
+/**
+ * Widest column the mapping refers to. Reading up to here instead of to
+ * `getLastColumn()` keeps a stray value in some far-right column from
+ * multiplying the payload by the width of the sheet.
+ */
+const MAX_MAPPED_COLUMN = Math.max(...Object.keys(CONFIG.COLUMN_KEY_MAPPING).map(
+    (key) => CONFIG.COLUMN_KEY_MAPPING[key as ColumnKey]
+));
 
 const readRows = (sheetName: string): string[][] => {
     const cached = rowCache[sheetName];
@@ -54,12 +63,18 @@ const readRows = (sheetName: string): string[][] => {
         return rowCache[sheetName];
     }
 
-    // Drop the header row; a tab holding only a header yields no data rows.
-    const rows = sheet
-        .getDataRange()
-        .getValues()
-        .slice(1)
-        .map((row) => row.map(asText));
+    // Row 1 is the header, so a tab with fewer than two rows has no data. An
+    // explicit range also keeps the read anchored at column A regardless of
+    // where the used range happens to begin.
+    const lastRow = sheet.getLastRow();
+    const width = Math.min(MAX_MAPPED_COLUMN, sheet.getMaxColumns());
+    const rows =
+        lastRow < 2
+            ? []
+            : sheet
+                  .getRange(2, 1, lastRow - 1, width)
+                  .getValues()
+                  .map((row) => row.map(asText));
     logService.log(`[sheetService] Read ${rows.length} rows from ${sheetName}`);
     rowCache[sheetName] = rows;
     return rows;
@@ -77,6 +92,16 @@ const formatText = (text: unknown): string => (text ? String(text).trim().toLowe
 
 /** 0-based position of `colName` within a row. */
 const columnIndex = (colName: ColumnKey): number => CONFIG.COLUMN_KEY_MAPPING[colName] - 1;
+
+/**
+ * How long to wait for the analytics write lock.
+ *
+ * Deliberately short: the lock is taken once per event, so a batched delivery
+ * multiplies this, and the whole execution has 30 seconds. Waiting briefly
+ * serialises the collision this protects against; waiting long would risk the
+ * execution instead.
+ */
+const LOCK_TIMEOUT_MS = 1000;
 
 const sheetService = {
     /**
@@ -130,13 +155,16 @@ const sheetService = {
     /**
      * Appends one row to USER_ACTION.
      *
-     * `appendRow` finds the next empty row server-side and writes atomically.
-     * The previous read-modify-write (`getLastRow()` then `setValues` on the
-     * computed range) let two concurrent webhook deliveries compute the same
-     * target row, so the second write silently overwrote the first.
+     * `appendRow` targets the bottom of the data region server-side, so unlike
+     * the previous `getLastRow()`-then-`setValues` it can never overwrite an
+     * existing row: the worst a concurrent execution can do is repeat an index.
+     * The script lock closes that gap too, and the write still goes ahead if
+     * the lock cannot be taken — losing an analytics row would be worse than
+     * a duplicate index.
      *
-     * The index column keeps its place in the sheet as a formula, since it is
-     * derived from the row's position and cannot be known before the append.
+     * The index stays a number, as it has always been: `appendRow` interprets a
+     * leading `=` as a formula, and a formula would renumber itself whenever the
+     * tab is sorted or a row is inserted.
      */
     save: (params: SaveData): void => {
         try {
@@ -151,7 +179,21 @@ const sheetService = {
                 return;
             }
 
-            userActionSheet.appendRow(['=ROW()-1', search, user, timeService.getCurrentTime()]);
+            const lock = LockService.getScriptLock();
+            const locked = lock.tryLock(LOCK_TIMEOUT_MS);
+            if (!locked) {
+                logService.log('[sheetService.save] Lock unavailable; index may repeat');
+            }
+            try {
+                // The header occupies row 1 and appendRow lands on the row after
+                // the last one, so this is the same 0-based index as before.
+                const index = userActionSheet.getLastRow() - 1;
+                userActionSheet.appendRow([index, search, user, timeService.getCurrentTime()]);
+            } finally {
+                if (locked) {
+                    lock.releaseLock();
+                }
+            }
             logService.log('[sheetService.save] User action saved successfully');
         } catch (error) {
             if (isConfigurationError(error)) throw error;
