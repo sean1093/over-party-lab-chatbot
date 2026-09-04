@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "allowJs": true,
+    "noEmit": true
+  },
+  "include": ["tests/**/*.ts", "vitest.config.mts"],
+  "exclude": ["node_modules", "dist"]
+}

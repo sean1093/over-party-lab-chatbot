@@ -117,7 +117,8 @@ const parseLineMessage = (e: any): ReceiveMessage | null => {
             }
         }
     } catch (error) {
-        if (isConfigurationError(error)) throw error;
+        // No script property is read in this block, so no ConfigurationError
+        // can originate here.
         logService.log('[parseLineMessage] Error: ' + errorMessage(error));
     }
     return null;

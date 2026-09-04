@@ -27,11 +27,14 @@ const getSpreadSheet = (): GoogleAppsScript.Spreadsheet.Spreadsheet => {
 };
 
 /**
- * Formats text to lowercase and trimmed for consistent comparison
- * @param text - The text to format
- * @returns Formatted text or empty string if input is null/undefined
+ * Normalises a cell or user input for comparison.
+ *
+ * Sheets returns a Number for numerically-formatted cells (a cocktail called
+ * "007", a year, a volume), so the value has to be stringified before it is
+ * trimmed — otherwise the lookup throws, the error is swallowed, and the bot
+ * reports "not found" for a drink that exists.
  */
-const formatText = (text: string): string => text ? text.trim().toLowerCase() : '';
+const formatText = (text: unknown): string => (text ? String(text).trim().toLowerCase() : '');
 
 const sheetService = {
     query: (params: QueryCriteria): object => {
