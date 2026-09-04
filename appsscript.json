@@ -1,8 +1,6 @@
 {
-  "timeZone": "Asia/Hong_Kong",
+  "timeZone": "Asia/Taipei",
   "runtimeVersion": "V8",
-  "dependencies": {
-  },
   "webapp": {
     "access": "ANYONE_ANONYMOUS",
     "executeAs": "USER_DEPLOYING"

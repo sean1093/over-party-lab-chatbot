@@ -158,7 +158,7 @@ npx clasp clone <SCRIPT_ID>
 
 ### 3. Configure Environment
 
-Non-secret settings (column mapping, sheet tab names, Instagram link, Messaging API base URL) live in
+Non-secret settings (column mapping, sheet tab names, Instagram link) live in
 [config.ts](config.ts) and are committed. **Secrets are not stored in source** — they are read from Apps
 Script script properties at runtime, so they never end up in the code that `clasp push` uploads.
 

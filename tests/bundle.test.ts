@@ -488,12 +488,15 @@ describe('doPost: webhook response', () => {
 });
 
 describe('logging', () => {
-  it('writes the same lines to console and to Logger', () => {
+  it('writes each line once, to console only', () => {
     const harness = loadBundle();
     harness.doPost(withToken({ postData: { contents: '{not json' } }));
 
     expect(harness.recorded.logs).toContain('[doPost]');
-    expect(harness.recorded.loggerLogs).toEqual(harness.recorded.logs);
+    // On the V8 runtime console.log and the legacy Logger.log both reach Cloud
+    // Logging, so calling both duplicated every line in the execution log.
+    expect(harness.recorded.loggerLogs).toEqual([]);
+    expect(harness.recorded.logs.filter((line) => line === '[doPost]')).toHaveLength(1);
   });
 
   it('includes the underlying error text rather than an empty message', () => {
