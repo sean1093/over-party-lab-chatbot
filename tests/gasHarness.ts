@@ -5,6 +5,11 @@
  * to test it is to evaluate the real build output (`dist/Code.js`) in a
  * `node:vm` context with the Apps Script globals stubbed, and then drive the
  * entry points the same way Apps Script does: by global function name.
+ *
+ * The stubs deliberately reproduce the *awkward* parts of the real APIs — a
+ * `getSheetValues` range that leaves the grid throws, `UrlFetchApp.fetch`
+ * throws on a non-2xx response unless `muteHttpExceptions` is set — because a
+ * forgiving stub turns a test into false confidence.
  */
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -56,11 +61,31 @@ export interface SheetWrite {
 export interface Recorded {
   fetches: FetchRecord[];
   writes: SheetWrite[];
+  /** Lines passed to `console.log`. */
   logs: string[];
+  /** Lines passed to `Logger.log`; both sinks must receive the same text. */
+  loggerLogs: string[];
+}
+
+export interface QueryCriteria {
+  select: string[];
+  from: string;
+  where: Record<string, string>;
+}
+
+export interface SaveData {
+  search: string;
+  user: string;
+}
+
+/** The subset of `sheetService` the suite drives directly. */
+export interface SheetService {
+  query: (criteria: QueryCriteria) => Record<string, unknown>;
+  save: (data: SaveData) => void;
 }
 
 export interface HarnessOptions {
-  /** Sheet tab name -> data rows (header row excluded). */
+  /** Sheet tab name -> rows *including the header row*, as the real tabs have. */
   sheets?: Record<string, SheetRow[]>;
   /** Script properties; omit a key to simulate an unset property. */
   properties?: Record<string, string>;
@@ -68,6 +93,8 @@ export interface HarnessOptions {
   responseCode?: number;
   /** Body returned by the stubbed LINE API. */
   responseBody?: string;
+  /** Freezes the clock inside the sandbox, e.g. '2026-01-02T03:04:05'. */
+  now?: string;
 }
 
 export interface Harness {
@@ -77,6 +104,8 @@ export interface Harness {
   testPost: () => unknown;
   /** Invokes the global `test_send` from `debug.ts`. */
   testSend: () => unknown;
+  /** The bundle's `sheetService`, for contracts `doPost` cannot reach alone. */
+  sheetService: SheetService;
   recorded: Recorded;
 }
 
@@ -87,45 +116,49 @@ export const DEFAULT_PROPERTIES: Record<string, string> = {
 };
 
 export const DRINK_LIST: SheetRow[] = [
-  // name, nameen, link, detail
+  ['name', 'nameen', 'link', 'detail'],
   ['伍迪', 'Woody', 'https://example.com/woody', '威士忌基底，煙燻風味'],
   ['白色俄羅斯', 'White Russian', 'https://example.com/white-russian', '伏特加與咖啡利口酒'],
-  ['瑪格麗特', 'Margarita', 'https://example.com/margarita', '經典龍舌蘭調酒'],
   ['琴通寧', 'Gin & Tonic', 'https://example.com/gin-tonic', '琴酒與通寧水'],
+  ['馬丁尼', 'Martini', 'https://example.com/martini', '琴酒與香艾酒'],
+  ['無介紹', 'NoDetail', 'https://example.com/no-detail', ''], // blank detail cell
+  [7, '007', 'https://example.com/007', '純伏特加'], // numeric cell: Sheets returns a Number
 ];
 
 export const ELEMENT_MAPPING: SheetRow[] = [
-  // name, nameen, link, detail, recommendation
-  ['琴酒', 'Gin', '', '', '2,3'],
-  ['伏特加', 'Vodka', '', '', '1,9'], // 9 is deliberately out of range
+  ['name', 'nameen', 'link', 'detail', 'recommendation'],
+  ['琴酒', 'Gin', '', '', '2,3'], // 琴通寧, 馬丁尼
+  ['伏特加', 'Vodka', '', '', '1,9'], // 白色俄羅斯; 9 is deliberately out of range
 ];
+
+export const USER_ACTION: SheetRow[] = [['index', 'search', 'user', 'time']];
 
 interface FetchRequest {
   method: string;
   headers: Record<string, string>;
   payload: string;
+  muteHttpExceptions?: boolean;
 }
 
 export function loadBundle(options: HarnessOptions = {}): Harness {
   const code = readFileSync(BUNDLE_PATH, 'utf8');
-  const sheets = options.sheets ?? {
-    DRINK_LIST,
-    ELEMENT_MAPPING,
-    USER_ACTION: [],
-  };
+  const sheets = options.sheets ?? { DRINK_LIST, ELEMENT_MAPPING, USER_ACTION };
   const properties = options.properties ?? DEFAULT_PROPERTIES;
-  const recorded: Recorded = { fetches: [], writes: [], logs: [] };
-
-  const record = (message: unknown): void => {
-    recorded.logs.push(String(message));
-  };
+  const recorded: Recorded = { fetches: [], writes: [], logs: [], loggerLogs: [] };
 
   const makeSheet = (name: string, rows: SheetRow[]) => ({
-    getLastRow: () => rows.length + 1, // data rows + header row
-    getSheetValues: (startRow: number, startCol: number, numRows: number, numCols: number) =>
-      rows
-        .slice(startRow - 2, startRow - 2 + numRows)
-        .map((row) => Array.from({ length: numCols }, (_, i) => row[startCol - 1 + i] ?? '')),
+    getLastRow: () => rows.length,
+    getSheetValues: (startRow: number, startCol: number, numRows: number, numCols: number) => {
+      if (startRow < 1 || numRows < 1 || startRow - 1 + numRows > rows.length) {
+        throw new Error(
+          `Those rows are out of bounds (sheet "${name}" has ${rows.length} rows, ` +
+            `asked for ${numRows} from row ${startRow})`
+        );
+      }
+      return rows
+        .slice(startRow - 1, startRow - 1 + numRows)
+        .map((row) => Array.from({ length: numCols }, (_, i) => row[startCol - 1 + i] ?? ''));
+    },
     getRange: (a1: string) => ({
       setValues: (values: SheetRow[]) => {
         recorded.writes.push({ sheet: name, a1, values });
@@ -133,9 +166,25 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     }),
   });
 
+  const frozenTime = options.now === undefined ? undefined : new Date(options.now).getTime();
+  class FrozenDate extends Date {
+    constructor(value?: number | string | Date) {
+      super(value === undefined ? (frozenTime as number) : value);
+    }
+
+    static now(): number {
+      return frozenTime as number;
+    }
+  }
+
   const sandbox: Record<string, unknown> = {
-    console: { log: record, info: record, warn: record, error: record },
-    Logger: { log: record },
+    console: {
+      log: (message: unknown) => recorded.logs.push(String(message)),
+    },
+    Logger: {
+      log: (message: unknown) => recorded.loggerLogs.push(String(message)),
+    },
+    Date: frozenTime === undefined ? Date : FrozenDate,
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (key: string) => properties[key] ?? null,
@@ -159,10 +208,15 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
           headers: request.headers,
           payload: JSON.parse(request.payload) as LinePayload,
         });
-        return {
-          getResponseCode: () => options.responseCode ?? 200,
-          getContentText: () => options.responseBody ?? '{}',
-        };
+        const status = options.responseCode ?? 200;
+        const body = options.responseBody ?? '{}';
+        if ((status < 200 || status >= 300) && !request.muteHttpExceptions) {
+          // Real UrlFetchApp.fetch throws unless muteHttpExceptions is set.
+          throw new Error(
+            `Request failed for ${url} returned code ${status}. Truncated server response: ${body}`
+          );
+        }
+        return { getResponseCode: () => status, getContentText: () => body };
       },
     },
   };
@@ -181,10 +235,13 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     return (fn as (...called: unknown[]) => unknown)(...args);
   };
 
+  const namespace = vm.runInContext('OverPartyLab', context) as { sheetService: SheetService };
+
   return {
     doPost: (event: unknown) => callGlobal('doPost', event),
     testPost: () => callGlobal('test_post'),
     testSend: () => callGlobal('test_send'),
+    sheetService: namespace.sheetService,
     recorded,
   };
 }

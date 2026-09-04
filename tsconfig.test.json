@@ -6,6 +6,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["node"],
+    "allowJs": true,
     "noEmit": true
   },
   "include": ["tests/**/*.ts", "vitest.config.mts"],
