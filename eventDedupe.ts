@@ -20,10 +20,14 @@ import logService, { errorMessage } from './logService';
  *   can both pass. Serialising every event behind a lock would spend the
  *   2-second webhook response budget to close a gap far narrower than the one
  *   this shuts.
- * - Every failure errs towards answering the user: a cache error means the
- *   event is processed again, never dropped.
+ * - Every failure errs towards answering the user: a missing id, an id too long
+ *   to key on, or a cache error all mean the event is processed again, never
+ *   dropped.
  */
 const KEY_PREFIX = 'webhookEvent:';
+
+/** `Cache.put` rejects a longer key, so dedupe is skipped rather than throwing. */
+const MAX_KEY_LENGTH = 250;
 
 /**
  * How long an id is remembered.
@@ -35,14 +39,31 @@ const KEY_PREFIX = 'webhookEvent:';
  */
 const RETENTION_SECONDS = 3600;
 
-/** Whether this event has already been handled by an earlier delivery. */
-export const wasHandled = (webhookEventId: string): boolean => {
+/** The cache key for an event, or null when the event cannot have one. */
+const cacheKey = (webhookEventId: string): string | null => {
     if (!webhookEventId) {
         // Nothing to key on: answering twice beats not answering at all.
+        return null;
+    }
+    const key = KEY_PREFIX + webhookEventId;
+    if (key.length > MAX_KEY_LENGTH) {
+        logService.log(`[eventDedupe] Id too long to remember: ${webhookEventId.length} chars`);
+        return null;
+    }
+    return key;
+};
+
+/** Whether this event has already been handled by an earlier delivery. */
+export const wasHandled = (webhookEventId: string): boolean => {
+    const key = cacheKey(webhookEventId);
+    if (!key) {
         return false;
     }
     try {
-        return CacheService.getScriptCache().get(KEY_PREFIX + webhookEventId) !== null;
+        // Truthiness, not `!== null`: a cache that answered a miss with
+        // anything other than null would otherwise refuse every event, and
+        // this is the one place where guessing wrong means silence.
+        return Boolean(CacheService.getScriptCache().get(key));
     } catch (error) {
         logService.log('[eventDedupe] Cache unavailable: ' + errorMessage(error));
         return false;
@@ -52,16 +73,18 @@ export const wasHandled = (webhookEventId: string): boolean => {
 /**
  * Records that this event has been handled.
  *
- * Called *after* handling, never before: a delivery that failed part-way
- * through is exactly what redelivery exists to retry, so it must stay
+ * Called only for an event nothing more can be done about — answered, or
+ * rejected in a way no later delivery could fix. A delivery that failed
+ * part-way through is exactly what a duplicate exists to retry, so it must stay
  * unrecorded.
  */
 export const markHandled = (webhookEventId: string): void => {
-    if (!webhookEventId) {
+    const key = cacheKey(webhookEventId);
+    if (!key) {
         return;
     }
     try {
-        CacheService.getScriptCache().put(KEY_PREFIX + webhookEventId, '1', RETENTION_SECONDS);
+        CacheService.getScriptCache().put(key, '1', RETENTION_SECONDS);
     } catch (error) {
         logService.log('[eventDedupe] Cache unavailable: ' + errorMessage(error));
     }

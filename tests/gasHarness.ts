@@ -78,10 +78,12 @@ export interface Recorded {
   lockAttempts: number[];
   /** How many times a lock was released. */
   lockReleases: number;
-  /** Keys read from the script cache. */
+  /** Keys read from the cache. */
   cacheGets: string[];
-  /** Entries written to the script cache. */
+  /** Entries written to the cache. */
   cachePuts: Array<{ key: string; value: string; ttl?: number }>;
+  /** Which `CacheService` accessor was used, so the scope is assertable. */
+  cacheAccessors: string[];
 }
 
 /** A row returned by `sheetService.findRow`. */
@@ -133,6 +135,11 @@ export interface HarnessOptions {
   cache?: Record<string, string>;
   /** Whether `CacheService` works; false makes every call throw. */
   cacheAvailable?: boolean;
+  /**
+   * Makes `UrlFetchApp.fetch` throw regardless of `muteHttpExceptions`, which
+   * is what a request that never reached LINE looks like.
+   */
+  fetchThrows?: boolean;
 }
 
 export interface Harness {
@@ -204,11 +211,35 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     lockReleases: 0,
     cacheGets: [],
     cachePuts: [],
+    cacheAccessors: [],
   };
 
   // Not per-harness by default: a caller can pass the same object to two
   // loadBundle calls to model two executions sharing one script cache.
   const cacheStore = options.cache ?? {};
+
+  const cacheAccessor = (scope: string) => () => {
+    recorded.cacheAccessors.push(scope);
+    return {
+      get: (key: string) => {
+        if (options.cacheAvailable === false) {
+          throw new Error('Cache is temporarily unavailable');
+        }
+        recorded.cacheGets.push(key);
+        return key in cacheStore ? cacheStore[key] : null;
+      },
+      put: (key: string, value: string, ttl?: number) => {
+        if (options.cacheAvailable === false) {
+          throw new Error('Cache is temporarily unavailable');
+        }
+        if (key.length > 250) {
+          throw new Error('Argument too large: key');
+        }
+        recorded.cachePuts.push({ key, value, ttl });
+        cacheStore[key] = value;
+      },
+    };
+  };
 
   /** Grid width of a tab, which a user can shrink by deleting columns. */
   const MAX_COLUMNS = options.maxColumns ?? 26;
@@ -280,22 +311,13 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
   const sandbox: Record<string, unknown> = {
     console: { log: record(recorded.logs) },
     CacheService: {
-      getScriptCache: () => ({
-        get: (key: string) => {
-          if (options.cacheAvailable === false) {
-            throw new Error('Cache is temporarily unavailable');
-          }
-          recorded.cacheGets.push(key);
-          return key in cacheStore ? cacheStore[key] : null;
-        },
-        put: (key: string, value: string, ttl?: number) => {
-          if (options.cacheAvailable === false) {
-            throw new Error('Cache is temporarily unavailable');
-          }
-          recorded.cachePuts.push({ key, value, ttl });
-          cacheStore[key] = value;
-        },
-      }),
+      // All three accessors share one bucket, as production effectively does:
+      // appsscript.json runs the web app as the deploying user, so the "user"
+      // never varies. The accessor is recorded instead, so a test can assert
+      // the scope the sources ask for rather than inferring it from behaviour.
+      getScriptCache: cacheAccessor('script'),
+      getUserCache: cacheAccessor('user'),
+      getDocumentCache: cacheAccessor('document'),
     },
     LockService: {
       getScriptLock: () => ({
@@ -346,6 +368,9 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     UrlFetchApp: {
       fetch: (url: string, request: FetchRequest) => {
         recorded.calls.push('send');
+        if (options.fetchThrows) {
+          throw new Error(`Address unavailable: ${url}`);
+        }
         recorded.fetches.push({
           url,
           method: request.method,

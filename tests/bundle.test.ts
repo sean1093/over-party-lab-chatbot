@@ -1199,3 +1199,124 @@ describe('duplicate deliveries', () => {
     ).toHaveLength(2);
   });
 });
+
+describe('duplicate deliveries: what counts as handled', () => {
+  const delivery = (id: string) =>
+    webhookBody([
+      {
+        type: 'message',
+        webhookEventId: id,
+        deliveryContext: { isRedelivery: true },
+        replyToken: 'reply-token-0001',
+        message: { type: 'text', id: '1', text: '伍迪' },
+        source: { type: 'user', userId: 'Uuser0001' },
+      },
+    ]);
+
+  it('asks the script cache, not a per-user one', () => {
+    // The web app runs as the deploying user, so the scope is not observable
+    // from behaviour alone — assert the accessor the sources reach for.
+    const harness = loadBundle();
+    harness.doPost(delivery(nextWebhookEventId()));
+
+    expect(new Set(harness.recorded.cacheAccessors)).toEqual(new Set(['script']));
+  });
+
+  it.each([
+    ['a 4xx LINE will reject again', 400],
+    ['an invalid reply token', 403],
+  ])('remembers the event when the reply failed with %s', (_name, responseCode) => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, responseCode, responseBody: '{"message":"nope"}' });
+    first.doPost(delivery(id));
+    expect(first.recorded.cachePuts).toHaveLength(1);
+
+    // Retrying spends another execution on a token LINE has already refused,
+    // and appends another analytics row, for a reply that cannot land.
+    const second = loadBundle({ cache, responseCode });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(0);
+    expect(second.recorded.writes).toHaveLength(0);
+  });
+
+  it.each([
+    ['a rate limit', 429],
+    ['a LINE server error', 500],
+    ['a bad gateway', 503],
+  ])('keeps the event retryable when the reply failed with %s', (_name, responseCode) => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, responseCode });
+    first.doPost(delivery(id));
+
+    expect(first.recorded.cachePuts).toEqual([]);
+    expect(first.recorded.logs).toContain(`[doPost] unanswered, still retryable: ${id}`);
+
+    // A duplicate is the only vehicle left for answering this user, since the
+    // webhook itself is acknowledged with a 200.
+    const second = loadBundle({ cache });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(1);
+    expect(replyTexts(second.recorded)).toContain('https://example.com/woody');
+  });
+
+  it('keeps the event retryable when the request never reached LINE', () => {
+    const cache: Record<string, string> = {};
+    const id = nextWebhookEventId();
+
+    const first = loadBundle({ cache, fetchThrows: true });
+    first.doPost(delivery(id));
+
+    // status 0: no HTTP response at all, so nothing is known to have happened.
+    expect(first.recorded.cachePuts).toEqual([]);
+    expect(first.recorded.logs).toContain(`[doPost] unanswered, still retryable: ${id}`);
+
+    const second = loadBundle({ cache });
+    second.doPost(delivery(id));
+    expect(second.recorded.fetches).toHaveLength(1);
+  });
+
+  it('does not treat a blank id as a shared key', () => {
+    // Three users, three whitespace-only ids: without trimming, the second and
+    // third are refused as duplicates of the first.
+    const cache: Record<string, string> = {};
+    for (const [id, userId] of [[' ', 'Uone'], ['  ', 'Utwo'], [' ', 'Uthree']]) {
+      const harness = loadBundle({ cache });
+      harness.doPost(
+        webhookBody([
+          {
+            type: 'message',
+            webhookEventId: id,
+            replyToken: 'reply-token-0001',
+            message: { type: 'text', id: '1', text: '伍迪' },
+            source: { type: 'user', userId },
+          },
+        ])
+      );
+      expect(harness.recorded.fetches).toHaveLength(1);
+      expect(harness.recorded.cachePuts).toEqual([]);
+    }
+  });
+
+  it('skips dedupe for an id too long to be a cache key, and says so', () => {
+    const harness = loadBundle();
+    const tooLong = 'x'.repeat(238); // 'webhookEvent:' + 238 = 251 > 250
+    harness.doPost(delivery(tooLong));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.cachePuts).toEqual([]);
+    expect(harness.recorded.logs).toContain('[eventDedupe] Id too long to remember: 238 chars');
+  });
+
+  it('answers rather than refusing when a cache miss is not reported as null', () => {
+    // The documented contract is String|null, but guessing wrong here is the
+    // one mistake that produces silence, so the check is a truthiness test.
+    const harness = loadBundle({ cache: Object.create({ 'webhookEvent:ghost': '1' }) });
+    harness.doPost(delivery(nextWebhookEventId()));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+  });
+});

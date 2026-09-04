@@ -1,6 +1,7 @@
 // service
 import logService, { errorMessage } from './logService';
 import lineService from './lineService';
+import type { SendResult } from './lineService';
 import sheetService from './sheetService';
 import properties, { isConfigurationError } from './properties';
 import { markHandled, wasHandled } from './eventDedupe';
@@ -139,7 +140,9 @@ const textMessageEvent = (raw: unknown): TextMessageEvent | null => {
     // from group and room events the user has not consented to; those still get
     // an answer, with an empty user in the analytics row.
     return {
-        webhookEventId: asString(event.webhookEventId),
+        // Trimmed like every other field: a blank-but-not-empty id would become
+        // a dedupe key shared by every event that carries one.
+        webhookEventId: asString(event.webhookEventId).trim(),
         isRedelivery: asRecord(event.deliveryContext)?.isRedelivery === true,
         replyToken,
         userId: asString(asRecord(event.source)?.userId),
@@ -209,14 +212,28 @@ const buildReply = (userMessage: string): Message[] => {
  * webhook, and the analytics write contends for a script lock. Recording the
  * search must never be what costs the user their answer.
  */
-const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent): void => {
+const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent): SendResult => {
     const messages = buildReply(userMessage);
     logService.log(messages);
-    lineService.reply(replyToken, messages);
+    const result = lineService.reply(replyToken, messages);
 
     // save user action
     sheetService.save({ search: userMessage, user: userId });
+    return result;
 };
+
+/**
+ * Whether a rejected reply could still succeed on a later delivery of the same
+ * event.
+ *
+ * A 4xx other than 429 means the reply token is spent or expired, or the
+ * payload is invalid: no duplicate delivery can do better, so the event is as
+ * finished as an answered one. A rate limit, a server error and a request that
+ * never reached LINE at all (`status` 0) are transient, and an event nobody has
+ * been answered about must stay retryable.
+ */
+const isRetryable = (status: number): boolean =>
+    status === 429 || status < 400 || status >= 500;
 
 /** `{"status":"ok"}` as JSON, the acknowledgement every delivery gets. */
 const acknowledge = (): GoogleAppsScript.Content.TextOutput =>
@@ -275,10 +292,15 @@ export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput 
                 logService.log(`[doPost] already handled ${message.webhookEventId}`);
                 continue;
             }
-            handleTextMessage(message);
-            // Only now: a delivery that failed part-way through is what
-            // redelivery exists to retry.
-            markHandled(message.webhookEventId);
+            const { ok, status } = handleTextMessage(message);
+            if (ok || !isRetryable(status)) {
+                // Only now, and only for an event nothing more can be done
+                // about: a delivery that failed part-way through, or a reply
+                // LINE could still accept, is what a duplicate exists to retry.
+                markHandled(message.webhookEventId);
+            } else {
+                logService.log(`[doPost] unanswered, still retryable: ${message.webhookEventId}`);
+            }
         } catch (error) {
             // Surfaced as a failed execution so a misconfigured deployment is
             // obvious rather than silently answering every user "not found".
