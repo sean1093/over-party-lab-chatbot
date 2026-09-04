@@ -23,6 +23,9 @@
     "**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "dist",
+    "tests",
+    "vitest.config.mts"
   ]
 }

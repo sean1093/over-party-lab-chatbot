@@ -270,36 +270,33 @@ npm run watch
 ### Development Workflow
 
 1. **Make local changes** to TypeScript files
-2. **Push to Google Apps Script**:
-   ```bash
-   npm run push
-   ```
-3. **Test in LINE**: Send messages to your bot
-4. **View logs**: Check Google Apps Script editor > Executions
+2. **Verify locally**: `npm run typecheck && npm test`
+3. **Push to Google Apps Script**: `npm run push`
+4. **Test in LINE**: Send messages to your bot
+5. **View logs**: Check Google Apps Script editor > Executions
 
 ### Testing
 
-The project includes testing utilities in `debug.ts`:
-
-```typescript
-// Test webhook POST endpoint
-function test_post() {
-  // Simulates a LINE webhook message
-  // Useful for testing message parsing and response logic
-}
-
-// Test sending messages
-function test_send() {
-  // Tests LINE API message delivery
-  // Requires CONFIG_DEBUG.USERID to be set
-}
+```bash
+npm test          # vitest, no credentials or network needed
+npm run typecheck # strict tsc over sources and tests
 ```
 
-**Run tests**:
-1. Open Google Apps Script editor
-2. Select the test function
-3. Click Run
-4. Check Execution log for results
+The suite in [tests/](tests) runs the **real build output**: `npm test` bundles the sources, then
+evaluates `dist/Code.js` inside a `node:vm` context with `SpreadsheetApp`, `UrlFetchApp`,
+`PropertiesService` and `Logger` stubbed ([tests/gasHarness.ts](tests/gasHarness.ts)). Entry points
+are invoked by *global function name*, exactly as Apps Script resolves them, so the bundling step is
+covered too — a build that Apps Script could not execute fails the suite.
+
+What is asserted: the packaging contract (no `import`/`export`/`require` in the bundle, entry points
+present as top-level functions, no post-ES2019 syntax), the reply flow (exact match, case- and
+whitespace-insensitive English match, ingredient recommendations, not-found fallback), the
+`USER_ACTION` write, malformed webhook payloads being ignored without sending anything, and
+fail-loud behaviour when a script property is unset.
+
+`debug.ts` still provides `test_post()` and `test_send()` for manual checks against the live LINE
+channel: open the Apps Script editor, select the function and click **Run**. These need the
+`DEBUG_USER_ID` script property and really do send a message, so they are not part of `npm test`.
 
 ### Local Development Tips
 

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` must work on a clean clone with no credentials configured:
+      # secrets live in Apps Script script properties, not in the sources.
+      - run: npm ci
+
+      - name: Type-check sources and tests
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build the Apps Script bundle
+        run: npm run build
