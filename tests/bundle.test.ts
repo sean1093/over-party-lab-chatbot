@@ -191,15 +191,35 @@ describe('doPost: analytics', () => {
     expect(harness.recorded.writes[0].values[0][3]).toBe('2026-01-02 03:04:05');
   });
 
-  it('records a sticker as an undefined search term', () => {
-    // Documents today's behaviour: a non-text message still reaches the sheet
-    // and the lookup. Fixing that is tracked in #14, and this assertion is the
-    // one that has to change when it is fixed.
+  it('ignores a non-text message entirely', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent(undefined));
 
-    expect(harness.recorded.writes[0].values[0][1]).toBeUndefined();
-    expect(replyTexts(harness.recorded)).toContain('找不到您要的調酒，不如來逛逛我們的頻道吧！');
+    // A sticker used to reach the sheet as `undefined`: an empty analytics row
+    // and a lookup that could match a blank cell.
+    expect(harness.recorded.writes).toHaveLength(0);
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[textMessageEvent] skipping message/sticker');
+  });
+
+  it('records the trimmed search term, not what the user typed', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('  伍迪  '));
+
+    // The lookup normalises before matching, so the counted row has to be
+    // normalised too: otherwise "伍迪" and "  伍迪  " are two search terms in
+    // every downstream count of this tab.
+    expect(harness.recorded.writes[0].values[0][1]).toBe('伍迪');
+  });
+
+  it('ignores a message that only looks non-empty', () => {
+    const harness = loadBundle();
+    // U+200B is a format character, not whitespace, so `trim` leaves it: the
+    // bot would spend a reply echoing an invisible message.
+    harness.doPost(textMessageEvent('\u200b\u200b'));
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
   });
 });
 
@@ -221,12 +241,181 @@ describe('doPost: malformed input is ignored without sending anything', () => {
   });
 });
 
+describe('doPost: webhook deliveries carrying several events', () => {
+  const messageEvent = (text: string, token: string, userId: string) => ({
+    type: 'message',
+    replyToken: token,
+    message: { type: 'text', id: '1', text },
+    source: { type: 'user', userId },
+  });
+
+  it('answers every event in the batch, each with its own reply token', () => {
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        messageEvent('伍迪', 'token-a', 'Uuser0001'),
+        messageEvent('白色俄羅斯', 'token-b', 'Uuser0002'),
+      ])
+    );
+
+    expect(harness.recorded.fetches.map((request) => request.payload.replyToken)).toEqual([
+      'token-a',
+      'token-b',
+    ]);
+    expect(harness.recorded.fetches[0].payload.messages[2].text).toBe(
+      'https://example.com/woody'
+    );
+    expect(harness.recorded.fetches[1].payload.messages[2].text).toBe(
+      'https://example.com/white-russian'
+    );
+    expect(harness.recorded.writes).toHaveLength(2);
+  });
+
+  it('keeps answering the rest of the batch when one event fails', () => {
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          ['伍迪', 'Woody', 'https://example.com/woody', '威士忌基底'],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(
+      webhookBody([
+        // No source: userId is missing, but the reply must still go out.
+        { type: 'message', replyToken: 'token-a', message: { type: 'text', id: '1', text: '伍迪' } },
+        messageEvent('伍迪', 'token-b', 'Uuser0002'),
+      ])
+    );
+
+    expect(harness.recorded.fetches.map((request) => request.payload.replyToken)).toEqual([
+      'token-a',
+      'token-b',
+    ]);
+  });
+
+  it.each([
+    ['follow', { type: 'follow', replyToken: 't', source: { type: 'user', userId: 'U1' } }],
+    ['unfollow', { type: 'unfollow', source: { type: 'user', userId: 'U1' } }],
+    ['join', { type: 'join', replyToken: 't', source: { type: 'group', groupId: 'G1' } }],
+    [
+      'postback',
+      { type: 'postback', replyToken: 't', postback: { data: 'x' }, source: { userId: 'U1' } },
+    ],
+    [
+      'image message',
+      {
+        type: 'message',
+        replyToken: 't',
+        message: { type: 'image', id: '1' },
+        source: { userId: 'U1' },
+      },
+    ],
+    [
+      // The one documented event that carries `message.type: "text"` AND its
+      // own reply token under a different `event.type`, so it is what pins the
+      // `event.type` half of the filter. Answering it would re-reply to every
+      // message a user edits.
+      'messageEdited',
+      {
+        type: 'messageEdited',
+        mode: 'active',
+        replyToken: '950e63e8f46542ab89f645b4c2a1180a',
+        message: { type: 'text', id: '610830548529053697', text: '伍迪' },
+        source: { type: 'group', groupId: 'Ca56f94637c', userId: 'U4af4980629' },
+      },
+    ],
+    [
+      // A standby-channel event belongs to the linked module, which is
+      // answering the user; replying would talk over it.
+      'standby-mode text message',
+      {
+        type: 'message',
+        mode: 'standby',
+        replyToken: '950e63e8f46542ab89f645b4c2a1180a',
+        message: { type: 'text', id: '1', text: '伍迪' },
+        source: { type: 'user', userId: 'U1' },
+      },
+    ],
+  ])('skips a %s event without touching the sheet', (_name, event) => {
+    const harness = loadBundle();
+    harness.doPost(webhookBody([event]));
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
+  });
+
+  it('still answers the text events in a mixed batch', () => {
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        { type: 'follow', replyToken: 't1', source: { type: 'user', userId: 'U1' } },
+        messageEvent('伍迪', 'token-b', 'Uuser0002'),
+        { type: 'message', replyToken: 't3', message: { type: 'sticker', id: '1' }, source: {} },
+      ])
+    );
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.fetches[0].payload.replyToken).toBe('token-b');
+  });
+});
+
+describe('doPost: webhook response', () => {
+  it.each([
+    ['a text message', textMessageEvent('伍迪')],
+    ['the empty events array LINE verifies with', webhookBody([])],
+    ['an unparseable body', { postData: { contents: '{not json' } }],
+    ['no argument at all', undefined],
+  ])('returns a JSON 200 for %s', (_name, event) => {
+    const harness = loadBundle();
+    // LINE retries or disables a webhook that reports failure, so every
+    // delivery has to be acknowledged.
+    const output = harness.doPost(event) as { content: string; mimeType: string };
+
+    expect(output.content).toBe('{"status":"ok"}');
+    expect(output.mimeType).toBe('application/json');
+  });
+
+  it('answers the valid events around a malformed entry in the array', () => {
+    const harness = loadBundle();
+    // `null` makes the type check throw; without per-event isolation the rest
+    // of the batch would never be answered.
+    harness.doPost(
+      webhookBody([
+        null,
+        {
+          type: 'message',
+          replyToken: 'token-b',
+          message: { type: 'text', id: '1', text: '伍迪' },
+          source: { type: 'user', userId: 'Uuser0002' },
+        },
+      ])
+    );
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+    expect(harness.recorded.fetches[0].payload.replyToken).toBe('token-b');
+    expect(harness.recorded.logs).toContain('[textMessageEvent] skipping object entry');
+  });
+
+  it('tolerates an events property that is not an array', () => {
+    const harness = loadBundle();
+    // `for...of` over a non-iterable throws, which would surface to LINE as a
+    // 500 and put the webhook at risk of being disabled.
+    expect(() =>
+      harness.doPost({ postData: { contents: '{"destination":"U0","events":{}}' } })
+    ).not.toThrow();
+    expect(harness.recorded.fetches).toHaveLength(0);
+  });
+});
+
 describe('logging', () => {
   it('writes the same lines to console and to Logger', () => {
     const harness = loadBundle();
     harness.doPost({ postData: { contents: '{not json' } });
 
-    expect(harness.recorded.logs).toContain('[doPost] Invalid message format');
+    expect(harness.recorded.logs).toContain('[doPost]');
     expect(harness.recorded.loggerLogs).toEqual(harness.recorded.logs);
   });
 
@@ -234,7 +423,7 @@ describe('logging', () => {
     const harness = loadBundle();
     harness.doPost({ postData: { contents: '{not json' } });
 
-    const prefix = '[parseLineMessage] Error: ';
+    const prefix = '[parseEvents] Error: ';
     const line = harness.recorded.logs.find((entry) => entry.startsWith(prefix));
     expect(line).toBeDefined();
     expect(line?.slice(prefix.length)).not.toBe('');
@@ -301,11 +490,17 @@ describe('rows with empty cells', () => {
         USER_ACTION,
       },
     });
-    // Normalises to the empty string, which equals the blank name cell.
-    harness.doPost(textMessageEvent('   '));
 
-    expect(replyTexts(harness.recorded)).not.toContain('https://example.com/orphan');
-    expect(replyTexts(harness.recorded)).toContain('找不到您要的調酒，不如來逛逛我們的頻道吧！');
+    // An empty search value equals every blank cell in the column, so the
+    // lookup itself has to refuse it — doPost's trim is only the outer guard.
+    expect(harness.sheetService.findRow('DRINK_LIST', { name: '   ' }, ['link'])).toBeNull();
+    expect(harness.sheetService.findRow('DRINK_LIST', { name: '' }, ['link'])).toBeNull();
+
+    // And a whitespace-only message never reaches the sheet at all.
+    harness.doPost(textMessageEvent('   '));
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[textMessageEvent] empty message text');
   });
 
   it('reads nothing from a tab that holds only a header row', () => {
@@ -379,7 +574,25 @@ describe('reply tokens', () => {
 
     expect(harness.recorded.fetches).toHaveLength(0);
     expect(harness.recorded.writes).toHaveLength(0);
-    expect(harness.recorded.logs).toContain('[parseLineMessage] event has no reply token');
+    expect(harness.recorded.logs).toContain('[textMessageEvent] event has no reply token');
+  });
+
+  it.each([
+    ['a numeric message text', { message: { type: 'text', id: '1', text: 7 }, replyToken: 't' }],
+    ['an object message text', { message: { type: 'text', id: '1', text: {} }, replyToken: 't' }],
+    ['a numeric reply token', { message: { type: 'text', id: '1', text: '伍迪' }, replyToken: 42 }],
+    [
+      'a whitespace reply token',
+      { message: { type: 'text', id: '1', text: '伍迪' }, replyToken: '   ' },
+    ],
+  ])('sends nothing for %s', (_name, fields) => {
+    // Nothing LINE sends looks like this, so coercing it into a search or a
+    // reply token would turn a platform change into a wrong answer or a 400.
+    const harness = loadBundle();
+    harness.doPost(webhookBody([{ type: 'message', source: { userId: 'U1' }, ...fields }]));
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
   });
 
   it('clamps an oversized cell instead of failing the whole reply', () => {
