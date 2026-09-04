@@ -96,12 +96,14 @@ const columnIndex = (colName: ColumnKey): number => CONFIG.COLUMN_KEY_MAPPING[co
 /**
  * How long to wait for the analytics write lock.
  *
- * Deliberately short: the lock is taken once per event, so a batched delivery
- * multiplies this, and the whole execution has 30 seconds. Waiting briefly
- * serialises the collision this protects against; waiting long would risk the
- * execution instead.
+ * Deliberately short. The Apps Script script runtime is 6 minutes, but that is
+ * not the binding deadline: LINE records a `request_timeout` webhook error when
+ * the bot server does not respond within **2 seconds**, and the lock is taken
+ * once per event, so a batched delivery multiplies this. Waiting briefly
+ * serialises the collision this protects against; waiting long would spend the
+ * response budget on an index number, and the write proceeds either way.
  */
-const LOCK_TIMEOUT_MS = 1000;
+const LOCK_TIMEOUT_MS = 500;
 
 const sheetService = {
     /**
