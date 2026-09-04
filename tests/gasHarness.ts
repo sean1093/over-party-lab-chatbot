@@ -311,6 +311,7 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (key: string) => properties[key] ?? null,
+        getProperties: () => ({ ...properties }),
       }),
     },
     SpreadsheetApp: {

@@ -478,10 +478,11 @@ describe('doPost: webhook response', () => {
   it('tolerates an events property that is not an array', () => {
     const harness = loadBundle();
     // `for...of` over a non-iterable throws, which would surface to LINE as a
-    // 500 and put the webhook at risk of being disabled.
-    expect(() =>
-      harness.doPost({ postData: { contents: '{"destination":"U0","events":{}}' } })
-    ).not.toThrow();
+    // 500 and put the webhook at risk of being disabled. The request has to be
+    // authentic, or it never reaches the parser this defends.
+    const body = JSON.stringify({ destination: DEFAULT_PROPERTIES.BOT_USER_ID, events: {} });
+    expect(() => harness.doPost(withToken({ postData: { contents: body } }))).not.toThrow();
+    expect(harness.recorded.logs).toContain('[parseDelivery] body carries no event array');
     expect(harness.recorded.fetches).toHaveLength(0);
   });
 });
@@ -959,14 +960,18 @@ describe('webhook authentication', () => {
   it.each([
     ['another bot', 'Usomeoneelsesbot'],
     ['an empty destination', ''],
+    // LINE documents user IDs as U[0-9a-f]{32}: the comparison stays exact so a
+    // future "helpful" normalisation cannot widen it.
+    ['this bot with the case folded', DEFAULT_PROPERTIES.BOT_USER_ID.toUpperCase()],
   ])('rejects a delivery addressed to %s', (_name, destination) => {
     const harness = loadBundle();
     const output = harness.doPost(
       withToken({ postData: { contents: JSON.stringify(forgedDelivery(destination)) } })
     ) as { content: string };
 
-    // Second, independent secret: whoever leaks the URL still cannot forge a
-    // delivery without knowing this bot's own user ID.
+    // Defence in depth rather than a second secret: `destination` is the bot's
+    // own user ID and arrives inside the body the caller controls, but a leaked
+    // URL alone is still not enough to forge a delivery.
     expect(harness.recorded.fetches).toHaveLength(0);
     expect(harness.recorded.writes).toHaveLength(0);
     expect(harness.recorded.logs).toContain('[doPost] rejected: destination is not this bot');
@@ -992,11 +997,37 @@ describe('webhook authentication', () => {
     expect(harness.recorded.fetches).toHaveLength(0);
   });
 
-  it('checks the token before reading the spreadsheet or the body', () => {
+  it('rejects the request without reading the body at all', () => {
     const harness = loadBundle();
-    harness.doPost(withToken({ postData: { contents: '{not json' } }, 'wrong'));
+    let bodyReads = 0;
+    harness.doPost({
+      parameter: { token: 'wrong' },
+      postData: {
+        // Counts every look at the body, so this fails if the token is checked
+        // after the delivery is parsed rather than before it.
+        get contents() {
+          bodyReads += 1;
+          return JSON.stringify({ destination: DEFAULT_PROPERTIES.BOT_USER_ID, events: [] });
+        },
+      },
+    });
+
+    expect(bodyReads).toBe(0);
+    expect(harness.recorded.calls).toEqual([]);
+  });
+
+  it('rejects a token that is not a string, even when it wraps the real secret', () => {
+    const harness = loadBundle();
+    // Apps Script puts strings in `e.parameter` and arrays in `e.parameters`.
+    // Narrowing to a string before comparing is what makes a future switch to
+    // `parameters` fail closed instead of accepting `[<secret>]`.
+    const output = harness.doPost({
+      parameter: { token: [DEFAULT_PROPERTIES.WEBHOOK_TOKEN] },
+      postData: { contents: JSON.stringify(forgedDelivery(DEFAULT_PROPERTIES.BOT_USER_ID)) },
+    }) as { content: string };
 
     expect(harness.recorded.calls).toEqual([]);
-    expect(harness.recorded.logs).not.toContain('[parseDelivery] Error: ');
+    expect(harness.recorded.logs).toContain('[doPost] rejected: webhook token mismatch');
+    expect(output.content).toBe('{"status":"ok"}');
   });
 });

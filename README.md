@@ -169,7 +169,7 @@ Open the Apps Script project (`npx clasp open-script`) and go to
 |---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` | Channel access token from LINE Developers Console → your channel → Messaging API |
 | `SPREADSHEET_ID` | The `{SHEET_ID}` part of `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit` |
-| `WEBHOOK_TOKEN` | A random secret you generate, e.g. `openssl rand -hex 24`. It is appended to the webhook URL and every request must carry it |
+| `WEBHOOK_TOKEN` | A random secret you generate: `openssl rand -hex 24`. Keep it URL-safe (`[A-Za-z0-9._~-]`) and free of leading or trailing whitespace — the comparison is exact, and a stray space fails silently with a `200`. It is appended to the webhook URL and every request must carry it |
 | `BOT_USER_ID` | This bot's own user ID, shown as **Your user ID** in LINE Developers Console → your channel → Basic settings. Every delivery's `destination` must equal it |
 | `DEBUG_USER_ID` | Your own LINE user ID; only used by `test_send()` |
 
@@ -404,11 +404,16 @@ The bot implements a two-tier search strategy:
 
 ### Core Functions
 
-#### `doPost(e: unknown): void`
-Webhook handler that processes incoming LINE messages. Reads
-`e.postData.contents`, replies through the Reply API and appends a row to
-`USER_ACTION`. Throws only on a missing script property, so a misconfigured
-deployment surfaces as a failed execution.
+#### `doPost(e: unknown): GoogleAppsScript.Content.TextOutput`
+Webhook handler. Authenticates the request first — `e.parameter.token` against the
+`WEBHOOK_TOKEN` property, then the body's `destination` against `BOT_USER_ID` — and only then
+parses `e.postData.contents`, answers each text message event through the Reply API, and appends a
+row to `USER_ACTION`.
+
+Always returns `{"status":"ok"}` as JSON with HTTP 200, including for a rejected or unparseable
+request: LINE redelivers on a non-2xx and may suspend a webhook that keeps failing. The single
+exception is a missing script property, which surfaces as a failed execution so that a
+misconfigured deployment cannot look healthy.
 
 ---
 
@@ -494,15 +499,27 @@ Configuration for Google Apps Script deployment:
 - ✅ Test webhook using LINE Console's verification tool
 
 #### `Missing script property "..."` Error
-- ✅ Set `LINE_CHANNEL_ACCESS_TOKEN`, `SPREADSHEET_ID` and `DEBUG_USER_ID` in
-     Apps Script → Project Settings → Script properties (see Configure Environment)
+- ✅ Set all five properties — `LINE_CHANNEL_ACCESS_TOKEN`, `SPREADSHEET_ID`, `WEBHOOK_TOKEN`,
+     `BOT_USER_ID` and `DEBUG_USER_ID` — in Apps Script → Project Settings → Script properties
+     (see [Configure Environment](#3-configure-environment))
 - ✅ Property names are case-sensitive
 
 #### `SyntaxError: Cannot use import statement outside a module` in Apps Script
 - ✅ You pushed the raw TypeScript sources. Run `npm run push` (which builds first) instead of `clasp push`
 - ✅ Verify `.clasp.json` contains `"rootDir": "dist"`
 
-#### Bot Not Responding
+#### Bot Not Responding (but LINE's **Verify** says success)
+**Check the webhook token first.** A rejected request is answered `200`, exactly like a successful
+one, so the console's Verify button reports success even when the token is missing or wrong — it
+only reports the HTTP status. Send the bot a real message and look at the execution log:
+- `[doPost] rejected: webhook token mismatch` → the registered webhook URL is missing `?token=`,
+  or its value no longer matches the `WEBHOOK_TOKEN` property. Rotating the secret means updating
+  both, together.
+- `[doPost] rejected: destination is not this bot` → the `BOT_USER_ID` property is not this
+  channel's **Your user ID**.
+- No `[doPost]` line at all → the deployment is not receiving the webhook; re-check the URL.
+
+#### Bot Not Responding (other causes)
 - ✅ Check Google Apps Script execution logs for errors
 - ✅ Verify LINE Channel Access Token is valid
 - ✅ Confirm the `SPREADSHEET_ID` script property is correct

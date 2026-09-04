@@ -38,8 +38,21 @@ export class ConfigurationError extends Error {
 export const isConfigurationError = (error: unknown): boolean =>
   error instanceof ConfigurationError;
 
+/**
+ * All script properties, fetched once per execution.
+ *
+ * `getProperties()` costs one Properties quota unit for the whole set, where
+ * `getProperty()` costs one each. `doPost` reads the webhook token on every
+ * request — including unauthenticated ones, since the token cannot be compared
+ * without it — so the per-request cost is worth keeping at one.
+ */
+let cachedProperties: Record<string, string> | null = null;
+
 const read = (key: string): string => {
-  const value = PropertiesService.getScriptProperties().getProperty(key);
+  if (!cachedProperties) {
+    cachedProperties = PropertiesService.getScriptProperties().getProperties();
+  }
+  const value = cachedProperties[key];
   if (!value) {
     throw new ConfigurationError(
       `Missing script property "${key}". Set it in Apps Script -> Project Settings -> Script properties.`

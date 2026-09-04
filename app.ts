@@ -37,7 +37,14 @@ const requestBody = (e: unknown): string | null => {
     return typeof postData.contents === 'string' ? postData.contents : null;
 };
 
-/** A query-string parameter of the request, or '' when absent. */
+/**
+ * A query-string parameter of the request, or '' when absent.
+ *
+ * Deliberately `e.parameter`, not `e.parameters`: Apps Script puts the *first*
+ * value of a repeated key in `parameter` (always a string) and every value in
+ * `parameters` (an array). Reading `parameters` would let `?token=x&token=<real>`
+ * pass while anything logging the query string sees only `x`.
+ */
 const requestParameter = (e: unknown, name: string): string => {
     const parameter = asRecord(asRecord(e)?.parameter);
     return asString(parameter?.[name]);
@@ -216,11 +223,15 @@ const acknowledge = (): GoogleAppsScript.Content.TextOutput =>
  * The one exception is a missing script property, which is rethrown below: a
  * deployment that answers "not found" to everyone must not look healthy.
  *
- * Authenticity is checked twice before anything is read or written. Apps Script
- * web apps cannot see request headers, so LINE's `x-line-signature` is not
- * available here — the webhook URL carries a shared secret instead, and the
- * payload's `destination` has to be this bot. Both are unguessable, so a
- * forged request cannot reach the spreadsheet or the Messaging API.
+ * Authenticity rests on the shared secret in the webhook URL. Apps Script web
+ * apps cannot see request headers, so LINE's `x-line-signature` is not
+ * available here and the `?token=` parameter is what stands in for it: without
+ * it nothing is parsed, read or written.
+ *
+ * The `destination` check is defence in depth, not a second secret. It is the
+ * bot's own user ID, it arrives inside the body the caller controls, and it
+ * cannot be rotated — but it does mean a leaked URL alone is not enough, and it
+ * catches a delivery misrouted from another channel.
  */
 export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput {
     logService.log('[doPost]');
