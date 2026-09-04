@@ -121,9 +121,10 @@ npm install
 # Login to Google Account
 npx clasp login
 
-# Create the Apps Script project with the build output as its root
-# (`--type webapp` is rejected by clasp 3.x; the project is a web app because
-#  appsscript.json says so, not because of a flag)
+# Create the Apps Script project with the build output as its root.
+# `--type` is not needed: what makes this a web app is the `webapp` block in
+# appsscript.json, which is already committed. (clasp 3.3.0 rejected
+# `--type webapp` outright with "Invalid container file type"; 3.4.1 accepts it.)
 npx clasp create-script --title "Over Party Lab Chatbot" --rootDir dist
 
 # Bundle TypeScript -> dist/Code.js and upload
@@ -149,9 +150,9 @@ npm install
 npx clasp login
 
 # Create a new Apps Script project, with dist/ as the directory clasp uploads.
-# Do not pass `--type webapp`: clasp 3.x rejects it with "Invalid container
-# file type". What makes this a web app is the `webapp` block in
-# appsscript.json, which is already committed.
+# `--type` is deliberately omitted: this is a web app because appsscript.json
+# carries the `webapp` block, not because of a flag. (clasp 3.3.0 also rejected
+# `--type webapp` with "Invalid container file type"; 3.4.1 accepts it.)
 npx clasp create-script --title "Over Party Lab Chatbot" --rootDir dist
 
 # Or adopt an existing project
