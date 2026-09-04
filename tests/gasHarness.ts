@@ -78,6 +78,10 @@ export interface Recorded {
   lockAttempts: number[];
   /** How many times a lock was released. */
   lockReleases: number;
+  /** Keys read from the script cache. */
+  cacheGets: string[];
+  /** Entries written to the script cache. */
+  cachePuts: Array<{ key: string; value: string; ttl?: number }>;
 }
 
 /** A row returned by `sheetService.findRow`. */
@@ -122,6 +126,13 @@ export interface HarnessOptions {
   now?: string;
   /** Whether `LockService.tryLock` succeeds; defaults to true. */
   lockAvailable?: boolean;
+  /**
+   * Script cache contents. Pass the same object to two `loadBundle` calls to
+   * model two executions of the same deployment.
+   */
+  cache?: Record<string, string>;
+  /** Whether `CacheService` works; false makes every call throw. */
+  cacheAvailable?: boolean;
 }
 
 export interface Harness {
@@ -191,7 +202,13 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     calls: [],
     lockAttempts: [],
     lockReleases: 0,
+    cacheGets: [],
+    cachePuts: [],
   };
+
+  // Not per-harness by default: a caller can pass the same object to two
+  // loadBundle calls to model two executions sharing one script cache.
+  const cacheStore = options.cache ?? {};
 
   /** Grid width of a tab, which a user can shrink by deleting columns. */
   const MAX_COLUMNS = options.maxColumns ?? 26;
@@ -262,6 +279,24 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
 
   const sandbox: Record<string, unknown> = {
     console: { log: record(recorded.logs) },
+    CacheService: {
+      getScriptCache: () => ({
+        get: (key: string) => {
+          if (options.cacheAvailable === false) {
+            throw new Error('Cache is temporarily unavailable');
+          }
+          recorded.cacheGets.push(key);
+          return key in cacheStore ? cacheStore[key] : null;
+        },
+        put: (key: string, value: string, ttl?: number) => {
+          if (options.cacheAvailable === false) {
+            throw new Error('Cache is temporarily unavailable');
+          }
+          recorded.cachePuts.push({ key, value, ttl });
+          cacheStore[key] = value;
+        },
+      }),
+    },
     LockService: {
       getScriptLock: () => ({
         tryLock: (timeoutMs: number) => {
@@ -372,14 +407,29 @@ export function webhookBody(events: unknown[], destination = 'Ubotdestination'):
   return withToken({ postData: { contents: JSON.stringify({ destination, events }) } });
 }
 
+let eventSequence = 0;
+
+/** A fresh `webhookEventId`, in the ULID shape LINE uses. */
+export function nextWebhookEventId(): string {
+  eventSequence += 1;
+  return `01H810YECXQQZ37VAXPF6H${eventSequence.toString().padStart(4, '0')}`;
+}
+
 /**
  * A webhook body with a single message event. `text: undefined` produces a
  * sticker event, i.e. a message event that carries no `text` property at all.
+ * Each call gets a fresh `webhookEventId`, as real events do.
  */
-export function textMessageEvent(text: string | undefined, userId = 'Uuser0001'): unknown {
+export function textMessageEvent(
+  text: string | undefined,
+  userId = 'Uuser0001',
+  webhookEventId = nextWebhookEventId()
+): unknown {
   return webhookBody([
     {
       type: 'message',
+      webhookEventId,
+      deliveryContext: { isRedelivery: false },
       replyToken: 'reply-token-0001',
       message: text === undefined ? { type: 'sticker', id: '1' } : { type: 'text', id: '1', text },
       source: { type: 'user', userId },

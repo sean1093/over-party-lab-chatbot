@@ -3,6 +3,7 @@ import logService, { errorMessage } from './logService';
 import lineService from './lineService';
 import sheetService from './sheetService';
 import properties, { isConfigurationError } from './properties';
+import { markHandled, wasHandled } from './eventDedupe';
 // config
 import CONFIG from './config';
 import WORDING from './wording';
@@ -10,6 +11,10 @@ import { recommendationMessage, textMessages } from './lineMessage';
 import type { Message } from './lineMessage';
 
 interface TextMessageEvent {
+    /** LINE's per-event id, used to recognise a duplicate delivery. */
+    webhookEventId: string;
+    /** Whether LINE is resending this delivery after a non-2xx. */
+    isRedelivery: boolean;
     replyToken: string;
     userId: string;
     userMessage: string;
@@ -133,7 +138,13 @@ const textMessageEvent = (raw: unknown): TextMessageEvent | null => {
     // `source` is absent from nothing LINE sends, but `source.userId` is absent
     // from group and room events the user has not consented to; those still get
     // an answer, with an empty user in the analytics row.
-    return { replyToken, userId: asString(asRecord(event.source)?.userId), userMessage };
+    return {
+        webhookEventId: asString(event.webhookEventId),
+        isRedelivery: asRecord(event.deliveryContext)?.isRedelivery === true,
+        replyToken,
+        userId: asString(asRecord(event.source)?.userId),
+        userMessage
+    };
 };
 
 /**
@@ -252,9 +263,22 @@ export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput 
     for (const event of events) {
         try {
             const message = textMessageEvent(event);
-            if (message) {
-                handleTextMessage(message);
+            if (!message) {
+                continue;
             }
+            if (message.isRedelivery) {
+                logService.log(`[doPost] redelivery of ${message.webhookEventId}`);
+            }
+            if (wasHandled(message.webhookEventId)) {
+                // A duplicate would append a second analytics row and spend the
+                // execution on a reply token that is already used.
+                logService.log(`[doPost] already handled ${message.webhookEventId}`);
+                continue;
+            }
+            handleTextMessage(message);
+            // Only now: a delivery that failed part-way through is what
+            // redelivery exists to retry.
+            markHandled(message.webhookEventId);
         } catch (error) {
             // Surfaced as a failed execution so a misconfigured deployment is
             // obvious rather than silently answering every user "not found".
