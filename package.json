@@ -8,7 +8,6 @@
     "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "push": "npm run build && clasp push",
-    "pull": "clasp pull",
     "deploy": "npm run build && clasp push && clasp deploy"
   },
   "repository": {

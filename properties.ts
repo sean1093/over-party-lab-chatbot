@@ -17,10 +17,27 @@ export const PROPERTY_KEYS = {
   debugUserId: 'DEBUG_USER_ID',
 } as const;
 
+/**
+ * Thrown when a required script property is missing.
+ *
+ * Deliberately distinct from runtime errors: services that swallow errors to
+ * keep the bot answering MUST rethrow this one, otherwise a deployment with an
+ * unset property answers "not found" to every user while looking healthy.
+ */
+export class ConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+export const isConfigurationError = (error: unknown): boolean =>
+  error instanceof ConfigurationError;
+
 const read = (key: string): string => {
   const value = PropertiesService.getScriptProperties().getProperty(key);
   if (!value) {
-    throw new Error(
+    throw new ConfigurationError(
       `Missing script property "${key}". Set it in Apps Script -> Project Settings -> Script properties.`
     );
   }

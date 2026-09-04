@@ -1,6 +1,6 @@
-import CONFIG from './config';
-import logService from './logService';
-import properties from './properties';
+import CONFIG, { ColumnKey } from './config';
+import logService, { errorMessage } from './logService';
+import properties, { isConfigurationError } from './properties';
 import timeService from './timeService';
 
 interface SaveData {
@@ -9,9 +9,9 @@ interface SaveData {
 };
 
 interface QueryCriteria {
-    select: Array<string>;
+    select: Array<ColumnKey>;
     from: string;
-    where: Object;
+    where: Partial<Record<ColumnKey, string>>;
 };
 
 /**
@@ -51,9 +51,9 @@ const sheetService = {
 
             if (where && Object.keys(where).length > 0) {
                 let find = -1;
-                for (let i in where) {
+                for (const i of Object.keys(where) as Array<ColumnKey>) {
                     const elementArray = sheetService.getColumnData(sheet, rowCount, i);
-                    const value = formatText(where[i]);
+                    const value = formatText(where[i] as string);
                     find = sheetService.findElement(elementArray, value);
                     if (find !== -1) {
                         break;
@@ -75,7 +75,9 @@ const sheetService = {
             logService.log('[sheetService.query] Query data finish');
             return result;
         } catch (error) {
-            logService.log('[sheetService.query] Error: ' + error.message);
+            // A misconfigured deployment must fail loudly, not answer "not found".
+            if (isConfigurationError(error)) throw error;
+            logService.log('[sheetService.query] Error: ' + errorMessage(error));
             return {};
         }
     },
@@ -86,7 +88,7 @@ const sheetService = {
      * @param colName - Column name as defined in COLUMN_KEY_MAPPING
      * @returns Array of values from the specified column
      */
-    getColumnData: (sheet: GoogleAppsScript.Spreadsheet.Sheet, rowCount: number, colName: string): Array<any> => {
+    getColumnData: (sheet: GoogleAppsScript.Spreadsheet.Sheet, rowCount: number, colName: ColumnKey): Array<any> => {
         const firstCol = CONFIG.COLUMN_KEY_MAPPING[colName];
         const rawData = sheet.getSheetValues(2, firstCol, rowCount, 1);
         let array: Array<any> = [];
@@ -136,7 +138,8 @@ const sheetService = {
             range.setValues([[index, search, user, time]]);
             logService.log('[sheetService.save] User action saved successfully');
         } catch (error) {
-            logService.log('[sheetService.save] Error: ' + error.message);
+            if (isConfigurationError(error)) throw error;
+            logService.log('[sheetService.save] Error: ' + errorMessage(error));
         }
     }
 };

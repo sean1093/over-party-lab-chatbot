@@ -1,4 +1,4 @@
-import logService from './logService';
+import logService, { errorMessage } from './logService';
 import CONFIG from './config';
 import properties from './properties';
 
@@ -47,7 +47,7 @@ const lineService = {
                 logService.log(response.getContentText());
             }
         } catch (error) {
-            logService.log('[LineService.pushMsg] Error: ' + error.message);
+            logService.log('[LineService.pushMsg] Error: ' + errorMessage(error));
             throw error;
         }
     }

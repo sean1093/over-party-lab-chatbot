@@ -171,8 +171,10 @@ Open the Apps Script project (`npx clasp open-script`) and go to
 | `SPREADSHEET_ID` | The `{SHEET_ID}` part of `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit` |
 | `DEBUG_USER_ID` | Your own LINE user ID; only used by `test_send()` |
 
-If a property is missing, the bot fails with `Missing script property "<KEY>"` in the execution log
-instead of silently misbehaving. See [properties.ts](properties.ts).
+If a property is missing, the execution fails with
+`ConfigurationError: Missing script property "<KEY>"` — the webhook returns an error and LINE's
+**Verify** button fails, so a misconfigured deployment is obvious instead of silently answering
+"not found" to every user. See [properties.ts](properties.ts).
 
 ### 4. Setup Google Sheets
 
@@ -257,9 +259,6 @@ npm run typecheck
 
 # Build, then push the bundle to Google Apps Script
 npm run push
-
-# Pull code from Google Apps Script
-npm run pull
 
 # Build, push and deploy a new version
 npm run deploy
