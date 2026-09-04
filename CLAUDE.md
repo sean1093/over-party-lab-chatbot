@@ -9,7 +9,7 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
 
 | Concern | File |
 |---|---|
-| Bundle entry point; exposes the Apps Script globals | `main.ts` |
+| Bundle entry point; declares the three Apps Script globals plus the documented test seam | `main.ts` |
 | Webhook authentication, event filtering, reply flow | `app.ts` |
 | LINE Messaging API client | `lineService.ts` |
 | Message objects and the API's payload limits | `lineMessage.ts` |
@@ -21,13 +21,21 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
 | Secrets, read from script properties | `properties.ts` |
 | Manual entry points for the Apps Script editor | `debug.ts` |
 | Bundler and its contract | `scripts/build.mjs`, `scripts/buildConfig.mjs` |
+| Apps Script manifest: V8 runtime, web-app access, time zone | `appsscript.json` |
 | Test harness over the built bundle | `tests/gasHarness.ts` |
+| Builds the bundle before the suite runs | `tests/globalSetup.ts` |
+| CI: `npm ci` → typecheck → test → build | `.github/workflows/ci.yml` |
 
 ### Runtime constraints that are easy to get wrong
 
 - The target is the **Apps Script V8 runtime**, not Node: no ES modules, no `require`, no npm
-  packages at runtime, one global scope, and a 30-second web-app execution limit. Everything is
-  bundled into `dist/Code.js` by `npm run build`.
+  packages at runtime, and one global scope. Everything is bundled into `dist/Code.js` by
+  `npm run build`.
+- The **script runtime is 6 minutes per execution** — the widely quoted 30 seconds is the limit for
+  simple triggers and custom functions, and the docs state it explicitly does *not* apply to
+  `doGet`/`doPost`. The deadline that actually binds is LINE's: it records a `request_timeout`
+  webhook error when the bot server does not respond within **2 seconds**. That is why the reply is
+  sent before the analytics write, and why the write's lock wait is short.
 - Apps Script resolves entry points **by global function name**. `doPost`, `test_post` and
   `test_send` are emitted as real top-level declarations by the build footer. A new entry point must
   be exported from `main.ts` *and* listed in `ENTRY_POINTS` in `scripts/buildConfig.mjs`.
@@ -38,9 +46,10 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
   Services that swallow errors **must rethrow that one**, or a misconfigured deployment answers
   "not found" to every user while looking healthy.
 - **Apps Script web apps cannot read request headers**, so LINE's `x-line-signature` cannot be
-  verified. Authenticity comes from the `?token=` shared secret and the `destination` check in
-  `app.ts`. Both are checked before the body is parsed or any sheet is touched.
-- `UrlFetchApp.fetch` throws on any non-2xx response unless `muteHttpExceptions: true` is set.
+  verified. Authenticity comes from the `?token=` shared secret, checked *before the body is even
+  parsed*, and from the `destination` check immediately after parsing. Both precede any sheet
+  access, any LINE call and any event handling.
+- `UrlFetchApp.fetch` throws on a failure status (4xx/5xx) unless `muteHttpExceptions: true` is set.
 - LINE reply tokens are single-use and expire about a minute after the webhook, so the reply must go
   out in the same execution — and before slower work such as the analytics write.
 - The Messaging API counts `text` and `altText` in **UTF-16 code units** and `title`, template
@@ -51,8 +60,8 @@ A LINE chatbot for cocktail discovery, running on **Google Apps Script** with it
 - `console.log` only. On V8 the legacy `Logger.log` reaches the same execution log, so writing to
   both duplicates every line.
 - Script properties are read once per execution with a single `getProperties()`. `doPost` reads the
-  webhook token on every request, including unauthenticated ones, so keeping that at one Properties
-  quota unit is deliberate.
+  webhook token on every request, including unauthenticated ones, so keeping the per-request cost at
+  a single Properties call is deliberate.
 
 ## 2. Commands
 
@@ -72,13 +81,18 @@ no credentials configured — never introduce an import of a git-ignored file.
 
 - Tests live in `tests/` and run under **vitest** in plain Node. They must not need network access,
   credentials, or a real spreadsheet.
-- The suite tests the **real build output**: `tests/gasHarness.ts` evaluates `dist/Code.js` in a
-  `node:vm` context with the Apps Script globals stubbed, and invokes entry points by *global
-  function name*, exactly as Apps Script resolves them. Keep it that way — it is what catches
-  packaging regressions that a re-imported module would hide.
+- The suite has two layers, and both matter:
+  - **End-to-end over the real build output.** `tests/bundle.test.ts` drives `tests/gasHarness.ts`,
+    which evaluates `dist/Code.js` in a `node:vm` context with the Apps Script globals stubbed and
+    invokes entry points by *global function name*, exactly as Apps Script resolves them. Anything
+    touching `doPost`, a service, or the packaging belongs here — it is what catches regressions a
+    re-imported module would hide.
+  - **Direct unit tests for modules with no Apps Script dependency**: `lineMessage.ts` (payload
+    limits) and `scripts/buildConfig.mjs` (the build contract). These import the source directly,
+    which is why those modules were written free of platform globals.
 - **Stubs must be at least as strict as the real API.** A forgiving stub converts a test into false
-  confidence. Precedents worth remembering: `UrlFetchApp.fetch` must throw on non-2xx unless
-  `muteHttpExceptions` is set; `getRange` must throw when the range leaves the grid;
+  confidence. Precedents worth remembering: `UrlFetchApp.fetch` must throw on a failure status
+  unless `muteHttpExceptions` is set; `getRange` must throw when the range leaves the grid;
   `getLastRow` must report the last row *with content*, not the row count.
 - **Assert observable outcomes, and assert them whole.** `toEqual` on a recorded payload or sheet
   write beats a `toContain` on one field: a spot check let a mutation that overwrote every previous
@@ -119,7 +133,8 @@ get it reviewed, fix, comment, merge.
      LINE console). Omit the section only when there genuinely is none.
 
 Write long descriptions and comments to a file and pass `--body-file`. Inlining them in a shell
-heredoc mangles backticks and `$`, and has silently truncated a review comment here before.
+heredoc mangles backticks and `$`: it silently mangled a review comment here into nonsense, which
+then had to be deleted and reposted.
 
 ### 4.3 Get it reviewed by other agents
 
@@ -178,10 +193,13 @@ gh pr merge <n> --squash --delete-branch
 git checkout master && git pull --ff-only
 ```
 
-`Fixes #<n>` in the description closes the issue on merge. If a pull request only partly addresses an
-issue, comment on the issue with what is left instead of closing it. If a review surfaces a real
-problem that is out of scope, **open an issue for it** rather than widening the pull request or
-losing the finding.
+`Fixes #<n>` in the description closes the issue on merge — but **a closing keyword binds to one
+issue only**: `Fixes #12, #15` closes #12 and leaves #15 open. Repeat the keyword for each one
+(`Fixes #12, fixes #15`) and check the issue list after merging. If a pull request only partly
+addresses an issue, comment on it with what is left instead of closing it.
+
+If a review surfaces a real problem that is out of scope, **open an issue for it** rather than
+widening the pull request or losing the finding.
 
 ### 4.6 Stacked pull requests
 

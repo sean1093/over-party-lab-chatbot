@@ -15,8 +15,8 @@ interface SendResult {
 /**
  * POSTs to the Messaging API.
  *
- * `muteHttpExceptions` is essential: without it `UrlFetchApp.fetch` throws on
- * any non-2xx response and the LINE error body — which names the offending
+ * `muteHttpExceptions` is essential: without it `UrlFetchApp.fetch` throws on a
+ * failure status (4xx/5xx) and the LINE error body — which names the offending
  * property, e.g. `messages[0].template.actions: size must be between 1 and 4` —
  * is truncated into the exception message and effectively lost.
  */

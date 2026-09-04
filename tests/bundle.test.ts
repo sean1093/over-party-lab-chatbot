@@ -193,7 +193,7 @@ describe('doPost: analytics', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent('伍迪'));
 
-    expect(harness.recorded.lockAttempts).toEqual([1000]);
+    expect(harness.recorded.lockAttempts).toEqual([500]);
     expect(harness.recorded.lockReleases).toBe(1);
   });
 
