@@ -208,31 +208,15 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
       return 0;
     },
     getMaxColumns: () => MAX_COLUMNS,
-    getDataRange: () => {
-      recorded.sheetReads.push(name);
-      recorded.calls.push('read');
-      // The real API is anchored at A1 and bounded by getLastColumn().
-      return { getValues: () => rows.map((row) => [...row]) };
-    },
     appendRow: (values: SheetRow) => {
       rows.push([...values]);
       recorded.calls.push('write');
       recorded.writes.push({ sheet: name, a1: 'append', values: [values] });
     },
-    getRange: (rowOrA1: number | string, col?: number, numRows?: number, numCols?: number) => {
-      if (typeof rowOrA1 === 'string') {
-        return {
-          getValues: () => [],
-          setValues: (values: SheetRow[]) => {
-            recorded.writes.push({ sheet: name, a1: rowOrA1, values });
-          },
-        };
-      }
-
-      const startRow = rowOrA1;
-      const startCol = col ?? 1;
-      const height = numRows ?? 1;
-      const width = numCols ?? 1;
+    // Numeric form only: the sources read an explicit range, so an accidental
+    // return to getDataRange() or an A1 string fails loudly here instead of
+    // silently reading something else.
+    getRange: (startRow: number, startCol: number, height: number, width: number) => {
       if (startRow < 1 || startCol < 1 || height < 1 || width < 1) {
         throw new Error(`The coordinates or dimensions of the range are invalid ("${name}")`);
       }

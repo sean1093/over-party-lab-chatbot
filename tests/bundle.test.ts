@@ -222,6 +222,18 @@ describe('doPost: analytics', () => {
     );
   });
 
+  it.each([
+    ['2026-01-02T03:04:05', '2026-01-02 03:04:05'],
+    // Every field two digits already, so a formatter that pads unconditionally
+    // or truncates would show up here and not in the padded case above.
+    ['2026-12-25T23:59:59', '2026-12-25 23:59:59'],
+  ])('formats %s as %s', (now, expected) => {
+    const harness = loadBundle({ now });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.writes[0].values[0][3]).toBe(expected);
+  });
+
   it('numbers each row of a batch in sequence', () => {
     const harness = loadBundle();
     const event = (text: string, token: string) => ({
@@ -488,9 +500,14 @@ describe('doPost: webhook response', () => {
 });
 
 describe('logging', () => {
-  it('writes each line once, to console only', () => {
+  it.each([
+    ['a scalar line', withToken({ postData: { contents: '{not json' } })],
+    // `logService.log` flattens an array and logs each entry separately, which
+    // is the path the reply payload takes.
+    ['a flattened array', textMessageEvent('伍迪')],
+  ])('writes %s once, to console only', (_name, event) => {
     const harness = loadBundle();
-    harness.doPost(withToken({ postData: { contents: '{not json' } }));
+    harness.doPost(event);
 
     expect(harness.recorded.logs).toContain('[doPost]');
     // On the V8 runtime console.log and the legacy Logger.log both reach Cloud
