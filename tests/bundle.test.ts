@@ -171,16 +171,44 @@ describe('doPost: no match', () => {
 });
 
 describe('doPost: analytics', () => {
-  it('appends [index, search, user, timestamp] below the last row', () => {
+  it('appends the row atomically instead of computing the target row', () => {
     const harness = loadBundle({ now: '2026-01-02T03:04:05' });
     harness.doPost(textMessageEvent('伍迪'));
 
+    // `appendRow` resolves the next empty row server-side. The previous
+    // getLastRow-then-setValues let two concurrent deliveries pick the same
+    // row, so the second write overwrote the first.
     expect(harness.recorded.writes).toEqual([
       {
         sheet: 'USER_ACTION',
-        a1: 'USER_ACTION!A2:D2',
-        values: [[0, '伍迪', 'Uuser0001', '2026-01-02 03:04:05']],
+        a1: 'append',
+        values: [['=ROW()-1', '伍迪', 'Uuser0001', '2026-01-02 03:04:05']],
       },
+    ]);
+  });
+
+  it('keeps every row of a batch instead of overwriting the previous one', () => {
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        {
+          type: 'message',
+          replyToken: 'token-a',
+          message: { type: 'text', id: '1', text: '伍迪' },
+          source: { type: 'user', userId: 'Uuser0001' },
+        },
+        {
+          type: 'message',
+          replyToken: 'token-b',
+          message: { type: 'text', id: '2', text: '白色俄羅斯' },
+          source: { type: 'user', userId: 'Uuser0002' },
+        },
+      ])
+    );
+
+    expect(harness.recorded.writes.map((write) => write.values[0][1])).toEqual([
+      '伍迪',
+      '白色俄羅斯',
     ]);
   });
 
@@ -443,13 +471,39 @@ describe('logging', () => {
     harness.doPost(textMessageEvent('伍迪'));
 
     expect(harness.recorded.logs).toContain(
-      '[sheetService.findRow] Error: Sheet "DRINK_LIST" not found'
+      '[sheetService] Error: Sheet "DRINK_LIST" not found'
     );
   });
 });
 
-describe('sheet access stays inside the grid', () => {
-  it('never requests more rows than the tab has', () => {
+describe('Sheets round-trips', () => {
+  it('reads each tab once per execution, not once per column', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('伍迪'));
+
+    // A match in DRINK_LIST needs the name, link and detail columns; the
+    // previous implementation issued one getSheetValues per column per lookup.
+    expect(harness.recorded.sheetReads).toEqual(['DRINK_LIST']);
+  });
+
+  it('does not re-read a tab for every event in a batch', () => {
+    const harness = loadBundle();
+    const event = (text: string, token: string) => ({
+      type: 'message',
+      replyToken: token,
+      message: { type: 'text', id: '1', text },
+      source: { type: 'user', userId: 'Uuser0001' },
+    });
+    harness.doPost(
+      webhookBody([event('伍迪', 't1'), event('琴酒', 't2'), event('不存在', 't3')])
+    );
+
+    // Three events, two tabs between them: three replies but only two reads.
+    expect(harness.recorded.fetches).toHaveLength(3);
+    expect(harness.recorded.sheetReads.sort()).toEqual(['DRINK_LIST', 'ELEMENT_MAPPING']);
+  });
+
+  it('never asks for rows outside the grid', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent('伍迪'));
 
