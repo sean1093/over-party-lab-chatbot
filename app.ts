@@ -6,114 +6,49 @@ import { isConfigurationError } from './properties';
 // config
 import CONFIG from './config';
 import WORDING from './wording';
+import { recommendationMessage, textMessages } from './lineMessage';
+import type { Message } from './lineMessage';
 
-// interfaces
 interface ReceiveMessage {
     replyToken: string;
     userId: string;
     userMessage: string;
 }
 
-interface ReplyMessage {
-    type: string;
-    to: string;
-    messages: Array<Message>;
+interface WebhookEvent {
+    type?: string;
+    replyToken?: string;
+    message?: { type?: string; text?: string };
+    source?: { userId?: string };
 }
 
-interface Message {
-    type: string;
-    text?: string;
-    altText?: string;
-    template?: object;
-}
-
-const addTextMessage = (msg: Array<Message>, content: string): void => {
-    if (content) {
-        msg.push({
-            'type': 'text',
-            'text': content
-        });
-    }
-}
-
-const getConfig = {
-    singleReply: (id: string, msgs: Array<string> = []): ReplyMessage => {
-        const messages = msgs.map((msg: string): Message => {
-            const resultMsg: Message = {
-                type: 'text',
-                text: msg
-            };
-            return resultMsg;
-        })
-        return {
-            type: 'push',
-            to: id,
-            messages: messages
-        };
-    },
-    normalReply: (to: string, userMessage: string, link: string, detail: string): ReplyMessage => {
-        const messages: Array<Message> = [];
-        addTextMessage(messages, userMessage);
-        addTextMessage(messages, detail);
-        addTextMessage(messages, link);
-        return {
-            type: 'push',
-            to,
-            messages
-        };
-    },
-    // return button message to let user feedback
-    buttonReply: (target: string, nameList: Array<string>, userId: string, userMessage: string): ReplyMessage => {
-        const replyMessages: Array<any> = [];
-        const recommendation = target.split(',');
-
-        // create replyMessages
-        for (let i = 0; i < recommendation.length; i++) {
-            const index = parseInt(recommendation[i]);
-            if (nameList[index]) {
-                replyMessages.push({
-                    "type": "message",
-                    "label": nameList[index],
-                    "text": nameList[index]
-                });
-            }
-        }
-        const displayText = WORDING.recommendation_head + userMessage + WORDING.recommendation_tail;
-        return {
-            type: 'push',
-            to: userId,
-            messages: [{
-                "type": "template",
-                "altText": displayText,
-                "template": {
-                    "type": "buttons",
-                    "title": displayText,
-                    "text": WORDING.see_more,
-                    "actions": replyMessages
-                }
-            }]
-        };
-    }
+/** `e.postData.contents`, or null when the request carries no body. */
+const requestBody = (e: unknown): string | null => {
+    if (!e || typeof e !== 'object' || !('postData' in e)) return null;
+    const postData = e.postData;
+    if (!postData || typeof postData !== 'object' || !('contents' in postData)) return null;
+    return typeof postData.contents === 'string' ? postData.contents : null;
 };
 
-const parseLineMessage = (e: any): ReceiveMessage | null => {
+const parseLineMessage = (e: unknown): ReceiveMessage | null => {
     try {
-        if (e && e.postData && e.postData.contents) {
-            // convert message to JSON format
-            const msg = JSON.parse(e.postData.contents);
-            const event = msg.events[0];
+        const contents = requestBody(e);
+        if (contents) {
+            // Shape asserted rather than validated: the payload comes from the
+            // LINE platform and every field is read defensively below.
+            const body = JSON.parse(contents) as { events?: WebhookEvent[] };
+            const event = body.events?.[0];
             if (event && event.message && event.source) {
-                const {
-                    replyToken,
-                    message: { text: userMessage },
-                    source: { userId }
-                } = event;
-                const receiveMessage: ReceiveMessage = {
-                    replyToken,
-                    userId,
+                const { replyToken, message, source } = event;
+                // A non-text message (sticker, image) carries no `text`. Today
+                // that undefined flows through into the lookup and the
+                // analytics row; #14 is what filters those events out.
+                const userMessage = message.text as string;
+                return {
+                    replyToken: replyToken ?? '',
+                    userId: source.userId ?? '',
                     userMessage
                 };
-                return receiveMessage;
             }
         }
     } catch (error) {
@@ -124,8 +59,58 @@ const parseLineMessage = (e: any): ReceiveMessage | null => {
     return null;
 };
 
+/**
+ * Resolves a recommendation cell into cocktail names.
+ *
+ * Cells hold comma-separated 0-based indices into the DRINK_LIST name column.
+ * Out-of-range and non-numeric entries are dropped: a stale index must never
+ * put an `undefined` label into a button.
+ */
+const recommendedNames = (recommendation: string, nameList: string[]): string[] =>
+    recommendation
+        .split(',')
+        .map((entry) => nameList[parseInt(entry, 10)])
+        .filter((name): name is string => Boolean(name));
+
+/** The reply for one incoming text message. */
+const buildReply = (userMessage: string): Message[] => {
+    // SELECT link, detail FROM DRINK_LIST WHERE name = userMessage OR nameen = userMessage
+    const drink = sheetService.findRow(
+        CONFIG.SHEET_NAMES.DRINK_LIST,
+        { name: userMessage, nameen: userMessage },
+        ['link', 'detail']
+    );
+
+    if (drink?.link) {
+        return textMessages(userMessage, drink.detail, drink.link);
+    }
+
+    // if we can't find the cocktail, try to recommend by ingredient
+    logService.log('[doPost] find recommendations');
+    const ingredient = sheetService.findRow(
+        CONFIG.SHEET_NAMES.ELEMENT_MAPPING,
+        { name: userMessage, nameen: userMessage },
+        ['recommendation']
+    );
+
+    if (ingredient?.recommendation) {
+        const names = recommendedNames(
+            ingredient.recommendation,
+            sheetService.columnValues(CONFIG.SHEET_NAMES.DRINK_LIST, 'name')
+        );
+        const template = recommendationMessage(names, userMessage);
+        // `template` is null when every index was stale: fall through instead
+        // of sending a template with no buttons, which LINE rejects.
+        if (template) {
+            return [template];
+        }
+    }
+
+    return textMessages(userMessage, WORDING.not_found, CONFIG.OVERPARTYLAB.IG);
+};
+
 // default apps script post method
-export default function doPost(e: any): void {
+export default function doPost(e: unknown): void {
     try {
         logService.log('[doPost]');
         const parsedMessage = parseLineMessage(e);
@@ -135,7 +120,7 @@ export default function doPost(e: any): void {
             return;
         }
 
-        const { userMessage, userId } = parsedMessage;
+        const { replyToken, userMessage, userId } = parsedMessage;
 
         // save user action
         sheetService.save({
@@ -143,49 +128,9 @@ export default function doPost(e: any): void {
             user: userId
         });
 
-        // SELECT link, detail FROM DRINK_LIST WHERE name = name OR nameen = name
-        const searchResult: any = sheetService.query({
-            select: ['link', 'detail'],
-            from: 'DRINK_LIST',
-            where: {
-                name: userMessage,
-                nameen: userMessage
-            }
-        });
-
-        let config: ReplyMessage;
-        const { link, detail } = searchResult;
-        if (link == null) {
-            // if can't find cocktail, try to recommend
-            // SELECT recommendation FROM ELEMENT_MAPPING WHERE name = name OR nameen = name
-            logService.log('[doPost] find recommendations');
-            const recommendations: any = sheetService.query({
-                select: ['recommendation'],
-                from: 'ELEMENT_MAPPING',
-                where: {
-                    name: userMessage,
-                    nameen: userMessage
-                }
-            });
-
-            // if there are nothing to recommend, return default not found wording
-            if (recommendations.recommendation == null) {
-                config = getConfig.normalReply(userId, userMessage, CONFIG.OVERPARTYLAB.IG, WORDING.not_found);
-            } else {
-                // return to ask type
-                const nameList: any = sheetService.query({
-                    select: ['name'],
-                    from: 'DRINK_LIST',
-                    where: {}
-                });
-                config = getConfig.buttonReply(recommendations.recommendation, nameList.name, userId, userMessage);
-            }
-        } else {
-            // create normal reply
-            config = getConfig.normalReply(userId, userMessage, link, detail);
-        }
-        logService.log([config]);
-        lineService.pushMsg(config);
+        const messages = buildReply(userMessage);
+        logService.log(messages);
+        lineService.reply(replyToken, messages);
     } catch (error) {
         // Surfaced as a failed execution so a misconfigured deployment is obvious.
         if (isConfigurationError(error)) throw error;

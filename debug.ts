@@ -11,8 +11,12 @@ import doPost from './app';
 import properties from './properties';
 
 /**
- * Test the doPost function by simulating a LINE webhook event
- * Change the message text to test different scenarios
+ * Test the doPost function by simulating a LINE webhook event.
+ * Change the message text to test different scenarios.
+ *
+ * The lookup, the analytics row and the reply payload are all exercised, but
+ * the reply itself fails with "Invalid reply token": real tokens only come
+ * from real webhook deliveries. Check the execution log for the built reply.
  */
 export function test_post(): void {
   const data = {
@@ -41,17 +45,12 @@ export function test_post(): void {
  * Useful for testing the LINE API connection
  */
 export function test_send(): void {
-  const messageConfig = {
-    type: 'push',
-    to: properties.debugUserId(),
-    messages: [
-      {
-        'type': 'text',
-        'text': 'Hello! This is a test message from Over Party Lab Bot.'
-      }
-    ]
-  };
-  lineService.pushMsg(messageConfig);
+  lineService.push(properties.debugUserId(), [
+    {
+      type: 'text',
+      text: 'Hello! This is a test message from Over Party Lab Bot.'
+    }
+  ]);
 }
 
 

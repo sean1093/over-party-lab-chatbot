@@ -50,6 +50,7 @@ export interface FetchRecord {
   method: string;
   headers: Record<string, string>;
   payload: LinePayload;
+  muteHttpExceptions?: boolean;
 }
 
 export interface SheetWrite {
@@ -61,17 +62,16 @@ export interface SheetWrite {
 export interface Recorded {
   fetches: FetchRecord[];
   writes: SheetWrite[];
-  /** Lines passed to `console.log`. */
+  /** Lines passed to `console.log`, rendered as text. */
   logs: string[];
+  /** Non-string payloads handed to the loggers, as received. */
+  objectLogs: object[];
   /** Lines passed to `Logger.log`; both sinks must receive the same text. */
   loggerLogs: string[];
 }
 
-export interface QueryCriteria {
-  select: string[];
-  from: string;
-  where: Record<string, string>;
-}
+/** A row returned by `sheetService.findRow`. */
+export type FoundRow = Record<string, string>;
 
 export interface SaveData {
   search: string;
@@ -80,7 +80,8 @@ export interface SaveData {
 
 /** The subset of `sheetService` the suite drives directly. */
 export interface SheetService {
-  query: (criteria: QueryCriteria) => Record<string, unknown>;
+  findRow: (from: string, where: Record<string, string>, select: string[]) => FoundRow | null;
+  columnValues: (from: string, colName: string) => string[];
   save: (data: SaveData) => void;
 }
 
@@ -144,7 +145,7 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
   const code = readFileSync(BUNDLE_PATH, 'utf8');
   const sheets = options.sheets ?? { DRINK_LIST, ELEMENT_MAPPING, USER_ACTION };
   const properties = options.properties ?? DEFAULT_PROPERTIES;
-  const recorded: Recorded = { fetches: [], writes: [], logs: [], loggerLogs: [] };
+  const recorded: Recorded = { fetches: [], writes: [], logs: [], objectLogs: [], loggerLogs: [] };
 
   const makeSheet = (name: string, rows: SheetRow[]) => ({
     getLastRow: () => rows.length,
@@ -177,13 +178,16 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     }
   }
 
+  const record = (sink: string[]) => (message: unknown) => {
+    sink.push(String(message));
+    if (message !== null && typeof message === 'object') {
+      recorded.objectLogs.push(message);
+    }
+  };
+
   const sandbox: Record<string, unknown> = {
-    console: {
-      log: (message: unknown) => recorded.logs.push(String(message)),
-    },
-    Logger: {
-      log: (message: unknown) => recorded.loggerLogs.push(String(message)),
-    },
+    console: { log: record(recorded.logs) },
+    Logger: { log: record(recorded.loggerLogs) },
     Date: frozenTime === undefined ? Date : FrozenDate,
     PropertiesService: {
       getScriptProperties: () => ({
@@ -207,6 +211,7 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
           method: request.method,
           headers: request.headers,
           payload: JSON.parse(request.payload) as LinePayload,
+          muteHttpExceptions: request.muteHttpExceptions,
         });
         const status = options.responseCode ?? 200;
         const body = options.responseBody ?? '{}';

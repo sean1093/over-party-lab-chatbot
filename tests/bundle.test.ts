@@ -101,17 +101,26 @@ describe('doPost: exact cocktail match', () => {
     }
   });
 
-  it('posts to the push endpoint with the token from script properties', () => {
+  it('answers with the Reply API, not a chargeable push', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent('伍迪'));
 
     const [request] = harness.recorded.fetches;
-    expect(request.url).toBe('https://api.line.me/v2/bot/message/push');
+    // Replies are free; push messages count against the monthly quota.
+    expect(request.url).toBe('https://api.line.me/v2/bot/message/reply');
     expect(request.method).toBe('post');
     expect(request.headers.Authorization).toBe(
       `Bearer ${DEFAULT_PROPERTIES.LINE_CHANNEL_ACCESS_TOKEN}`
     );
-    expect(request.payload.to).toBe('Uuser0001');
+    expect(request.payload.replyToken).toBe('reply-token-0001');
+    expect(request.payload.to).toBeUndefined();
+  });
+
+  it('sets muteHttpExceptions so the LINE error body stays readable', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.fetches[0].muteHttpExceptions).toBe(true);
   });
 });
 
@@ -231,13 +240,13 @@ describe('logging', () => {
     expect(line?.slice(prefix.length)).not.toBe('');
   });
 
-  it('renders non-string payloads instead of handing them to the loggers raw', () => {
+  it('logs the built reply payload as an object, not as "[object Object]"', () => {
     const harness = loadBundle();
     harness.doPost(textMessageEvent('伍迪'));
 
-    // sheetService logs the numeric 1-based row index; both Apps Script loggers
-    // only accept `string | object`.
-    expect(harness.recorded.logs).toContain('1');
+    // logService.log flattens arrays and hands each message to both sinks;
+    // both Apps Script loggers only accept `string | object`.
+    expect(harness.recorded.objectLogs).toContainEqual({ type: 'text', text: '伍迪' });
   });
 
   it('reports which sheet tab is missing', () => {
@@ -245,7 +254,7 @@ describe('logging', () => {
     harness.doPost(textMessageEvent('伍迪'));
 
     expect(harness.recorded.logs).toContain(
-      '[sheetService.query] Error: Sheet "DRINK_LIST" not found'
+      '[sheetService.findRow] Error: Sheet "DRINK_LIST" not found'
     );
   });
 });
@@ -267,16 +276,16 @@ describe('LINE API rejection', () => {
     expect(() => harness.doPost(textMessageEvent('伍迪'))).not.toThrow();
   });
 
-  it('logs the failure instead of reporting success', () => {
+  it('logs the status and the LINE error body instead of reporting success', () => {
     const harness = loadBundle({ responseCode: 400, responseBody: '{"message":"bad request"}' });
     harness.doPost(textMessageEvent('伍迪'));
 
-    // UrlFetchApp throws on non-2xx because muteHttpExceptions is not set, so
-    // the status-code branch in lineService is unreachable and the LINE error
-    // body is only visible through the thrown message. Tracked in #16; these
-    // assertions have to change when it is fixed.
-    expect(harness.recorded.logs.some((line) => line.includes('returned code 400'))).toBe(true);
-    expect(harness.recorded.logs).not.toContain('[LineService.pushMsg] Push message successfully');
+    // With muteHttpExceptions the response is returned instead of thrown, so
+    // the body naming the offending property survives into the log.
+    expect(harness.recorded.logs).toContain(
+      '[lineService.reply] Failed with status 400: {"message":"bad request"}'
+    );
+    expect(harness.recorded.logs.some((line) => line.includes('Sent 200'))).toBe(false);
   });
 });
 
@@ -304,8 +313,9 @@ describe('script properties', () => {
   });
 
   it.each([
-    ['query', (service: SheetService) =>
-      service.query({ select: ['link'], from: 'DRINK_LIST', where: { name: '伍迪' } })],
+    ['findRow', (service: SheetService) =>
+      service.findRow('DRINK_LIST', { name: '伍迪' }, ['link'])],
+    ['columnValues', (service: SheetService) => service.columnValues('DRINK_LIST', 'name')],
     ['save', (service: SheetService) => service.save({ search: '伍迪', user: 'Uuser0001' })],
   ])('sheetService.%s rethrows a missing property instead of swallowing it', (_name, call) => {
     const harness = loadBundle({ properties: { LINE_CHANNEL_ACCESS_TOKEN: 'test-token' } });
