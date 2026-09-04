@@ -15,12 +15,19 @@ interface TextMessageEvent {
     userMessage: string;
 }
 
-interface WebhookEvent {
-    type?: string;
-    replyToken?: string;
-    message?: { type?: string; text?: string };
-    source?: { userId?: string };
-}
+/** Narrows an unvalidated value to an object whose fields can be read. */
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+
+/** A field of the webhook payload, or '' when it is absent or not a string. */
+const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+/**
+ * Zero-width characters: `String#trim` leaves them, since they are format
+ * characters rather than whitespace, so a message that looks empty to the user
+ * would otherwise be searched for.
+ */
+const ZERO_WIDTH = /[\u200b-\u200d\ufeff]/g;
 
 /** `e.postData.contents`, or null when the request carries no body. */
 const requestBody = (e: unknown): string | null => {
@@ -31,21 +38,25 @@ const requestBody = (e: unknown): string | null => {
 };
 
 /**
- * The events of one webhook delivery.
+ * The events of one webhook delivery, unvalidated.
  *
  * LINE may batch several events into a single request, and sends an empty
- * array to verify connectivity.
+ * array to verify the webhook URL.
  */
-const parseEvents = (e: unknown): WebhookEvent[] => {
+const parseEvents = (e: unknown): unknown[] => {
     try {
         const contents = requestBody(e);
         if (!contents) {
             return [];
         }
-        // Shape asserted rather than validated: the payload comes from the
-        // LINE platform and every field is read defensively below.
-        const body = JSON.parse(contents) as { events?: WebhookEvent[] };
-        return Array.isArray(body.events) ? body.events : [];
+        const events = asRecord(JSON.parse(contents))?.events;
+        if (Array.isArray(events)) {
+            return events;
+        }
+        // Distinguishable from the empty array LINE verifies the URL with: a
+        // body this bot cannot read at all is a platform change, not a ping.
+        logService.log('[parseEvents] body carries no event array');
+        return [];
     } catch (error) {
         // No script property is read in this block, so no ConfigurationError
         // can originate here.
@@ -57,27 +68,53 @@ const parseEvents = (e: unknown): WebhookEvent[] => {
 /**
  * A text message this bot can answer, or null.
  *
- * Everything else is skipped rather than guessed at: a sticker or image event
- * has a `message` object with no `text`, and letting that through means an
- * empty search hitting the sheet and an empty row in the analytics tab.
+ * Every field is validated rather than assumed: the payload is external input,
+ * and a sticker or image event carries a `message` object with no `text`, which
+ * used to reach the sheet as an empty search and an empty analytics row.
  */
-const textMessageEvent = (event: WebhookEvent): TextMessageEvent | null => {
-    if (event.type !== 'message' || event.message?.type !== 'text') {
-        logService.log(`[doPost] skipping ${event.type ?? 'unknown'}/${event.message?.type ?? '-'}`);
+const textMessageEvent = (raw: unknown): TextMessageEvent | null => {
+    const event = asRecord(raw);
+    if (!event) {
+        logService.log(`[textMessageEvent] skipping ${typeof raw} entry`);
         return null;
     }
-    if (!event.replyToken) {
-        // Standby-mode events carry no reply token. Manufacturing an empty one
-        // only spends the execution on a 400.
-        logService.log('[doPost] event has no reply token');
+
+    const message = asRecord(event.message);
+    const eventType = asString(event.type);
+    const messageType = asString(message?.type);
+    if (eventType !== 'message' || messageType !== 'text') {
+        // `messageEdited` also carries a text message and a reply token, so the
+        // event type has to be checked, not just the message type.
+        logService.log(
+            `[textMessageEvent] skipping ${eventType || 'unknown'}/${messageType || '-'}`
+        );
         return null;
     }
-    const userMessage = (event.message.text ?? '').trim();
+
+    if (asString(event.mode) === 'standby') {
+        // A standby-channel event belongs to the linked module, which is
+        // answering the user; replying would talk over it. Such events also
+        // arrive without a reply token, so this is belt and braces.
+        logService.log('[textMessageEvent] skipping standby event');
+        return null;
+    }
+
+    const replyToken = asString(event.replyToken).trim();
+    if (!replyToken) {
+        logService.log('[textMessageEvent] event has no reply token');
+        return null;
+    }
+
+    const userMessage = asString(message?.text).replace(ZERO_WIDTH, '').trim();
     if (!userMessage) {
-        logService.log('[doPost] empty message text');
+        logService.log('[textMessageEvent] empty message text');
         return null;
     }
-    return { replyToken: event.replyToken, userId: event.source?.userId ?? '', userMessage };
+
+    // `source` is absent from nothing LINE sends, but `source.userId` is absent
+    // from group and room events the user has not consented to; those still get
+    // an answer, with an empty user in the analytics row.
+    return { replyToken, userId: asString(asRecord(event.source)?.userId), userMessage };
 };
 
 /**
@@ -148,8 +185,12 @@ const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent
 /**
  * Apps Script web app entry point for the LINE webhook.
  *
- * Always answers 200: the LINE platform retries or disables a webhook that
- * reports failure, and one unanswerable event must not do that.
+ * Answers 200 for every payload LINE can send: the platform redelivers on a
+ * non-2xx and may suspend a webhook that keeps failing, so an unparseable body
+ * or an unanswerable event must not report failure.
+ *
+ * The one exception is a missing script property, which is rethrown below: a
+ * deployment that answers "not found" to everyone must not look healthy.
  */
 export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput {
     logService.log('[doPost]');

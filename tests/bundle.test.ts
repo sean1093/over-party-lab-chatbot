@@ -199,7 +199,27 @@ describe('doPost: analytics', () => {
     // and a lookup that could match a blank cell.
     expect(harness.recorded.writes).toHaveLength(0);
     expect(harness.recorded.fetches).toHaveLength(0);
-    expect(harness.recorded.logs).toContain('[doPost] skipping message/sticker');
+    expect(harness.recorded.logs).toContain('[textMessageEvent] skipping message/sticker');
+  });
+
+  it('records the trimmed search term, not what the user typed', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('  伍迪  '));
+
+    // The lookup normalises before matching, so the counted row has to be
+    // normalised too: otherwise "伍迪" and "  伍迪  " are two search terms in
+    // every downstream count of this tab.
+    expect(harness.recorded.writes[0].values[0][1]).toBe('伍迪');
+  });
+
+  it('ignores a message that only looks non-empty', () => {
+    const harness = loadBundle();
+    // U+200B is a format character, not whitespace, so `trim` leaves it: the
+    // bot would spend a reply echoing an invisible message.
+    harness.doPost(textMessageEvent('\u200b\u200b'));
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
   });
 });
 
@@ -293,6 +313,32 @@ describe('doPost: webhook deliveries carrying several events', () => {
         source: { userId: 'U1' },
       },
     ],
+    [
+      // The one documented event that carries `message.type: "text"` AND its
+      // own reply token under a different `event.type`, so it is what pins the
+      // `event.type` half of the filter. Answering it would re-reply to every
+      // message a user edits.
+      'messageEdited',
+      {
+        type: 'messageEdited',
+        mode: 'active',
+        replyToken: '950e63e8f46542ab89f645b4c2a1180a',
+        message: { type: 'text', id: '610830548529053697', text: '伍迪' },
+        source: { type: 'group', groupId: 'Ca56f94637c', userId: 'U4af4980629' },
+      },
+    ],
+    [
+      // A standby-channel event belongs to the linked module, which is
+      // answering the user; replying would talk over it.
+      'standby-mode text message',
+      {
+        type: 'message',
+        mode: 'standby',
+        replyToken: '950e63e8f46542ab89f645b4c2a1180a',
+        message: { type: 'text', id: '1', text: '伍迪' },
+        source: { type: 'user', userId: 'U1' },
+      },
+    ],
   ])('skips a %s event without touching the sheet', (_name, event) => {
     const harness = loadBundle();
     harness.doPost(webhookBody([event]));
@@ -350,7 +396,7 @@ describe('doPost: webhook response', () => {
 
     expect(harness.recorded.fetches).toHaveLength(1);
     expect(harness.recorded.fetches[0].payload.replyToken).toBe('token-b');
-    expect(harness.recorded.logs.some((line) => line.startsWith('[doPost] Error:'))).toBe(true);
+    expect(harness.recorded.logs).toContain('[textMessageEvent] skipping object entry');
   });
 
   it('tolerates an events property that is not an array', () => {
@@ -454,7 +500,7 @@ describe('rows with empty cells', () => {
     harness.doPost(textMessageEvent('   '));
     expect(harness.recorded.fetches).toHaveLength(0);
     expect(harness.recorded.writes).toHaveLength(0);
-    expect(harness.recorded.logs).toContain('[doPost] empty message text');
+    expect(harness.recorded.logs).toContain('[textMessageEvent] empty message text');
   });
 
   it('reads nothing from a tab that holds only a header row', () => {
@@ -528,7 +574,25 @@ describe('reply tokens', () => {
 
     expect(harness.recorded.fetches).toHaveLength(0);
     expect(harness.recorded.writes).toHaveLength(0);
-    expect(harness.recorded.logs).toContain('[doPost] event has no reply token');
+    expect(harness.recorded.logs).toContain('[textMessageEvent] event has no reply token');
+  });
+
+  it.each([
+    ['a numeric message text', { message: { type: 'text', id: '1', text: 7 }, replyToken: 't' }],
+    ['an object message text', { message: { type: 'text', id: '1', text: {} }, replyToken: 't' }],
+    ['a numeric reply token', { message: { type: 'text', id: '1', text: '伍迪' }, replyToken: 42 }],
+    [
+      'a whitespace reply token',
+      { message: { type: 'text', id: '1', text: '伍迪' }, replyToken: '   ' },
+    ],
+  ])('sends nothing for %s', (_name, fields) => {
+    // Nothing LINE sends looks like this, so coercing it into a search or a
+    // reply token would turn a platform change into a wrong answer or a 400.
+    const harness = loadBundle();
+    harness.doPost(webhookBody([{ type: 'message', source: { userId: 'U1' }, ...fields }]));
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
   });
 
   it('clamps an oversized cell instead of failing the whole reply', () => {
