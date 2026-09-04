@@ -205,9 +205,9 @@ Automatically logs user interactions (no manual setup needed).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| index | Number | Auto-increment ID |
-| search | Text | User search query |
-| user | Text | LINE User ID |
+| index | Number | 0-based row counter, assigned under a script lock so concurrent deliveries cannot collide |
+| search | Text | User search query (trimmed) |
+| user | Text | LINE User ID; empty for group/room events without one |
 | time | Datetime | Timestamp |
 
 3. Copy the Google Sheet ID from the URL into the `SPREADSHEET_ID` script property (step 3)

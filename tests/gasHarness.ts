@@ -68,6 +68,16 @@ export interface Recorded {
   objectLogs: object[];
   /** Lines passed to `Logger.log`; both sinks must receive the same text. */
   loggerLogs: string[];
+  /** Tab name for every Sheets read, so the round-trip count is assertable. */
+  sheetReads: string[];
+  /** `<tab> <height>x<width> from R<row>C<col>` for every range read. */
+  sheetRanges: string[];
+  /** `read` / `write` / `send` in the order the bundle performed them. */
+  calls: string[];
+  /** Timeout of every `tryLock` call, so lock use is assertable. */
+  lockAttempts: number[];
+  /** How many times a lock was released. */
+  lockReleases: number;
 }
 
 /** A row returned by `sheetService.findRow`. */
@@ -106,8 +116,12 @@ export interface HarnessOptions {
   responseCode?: number;
   /** Body returned by the stubbed LINE API. */
   responseBody?: string;
+  /** Grid width of every tab; a fresh sheet has 26 columns. */
+  maxColumns?: number;
   /** Freezes the clock inside the sandbox, e.g. '2026-01-02T03:04:05'. */
   now?: string;
+  /** Whether `LockService.tryLock` succeeds; defaults to true. */
+  lockAvailable?: boolean;
 }
 
 export interface Harness {
@@ -157,28 +171,89 @@ interface FetchRequest {
 
 export function loadBundle(options: HarnessOptions = {}): Harness {
   const code = readFileSync(BUNDLE_PATH, 'utf8');
-  const sheets = options.sheets ?? { DRINK_LIST, ELEMENT_MAPPING, USER_ACTION };
+  // Copied: `appendRow` mutates its tab, and the fixtures are module-level.
+  const source = options.sheets ?? { DRINK_LIST, ELEMENT_MAPPING, USER_ACTION };
+  const sheets: Record<string, SheetRow[]> = {};
+  for (const name of Object.keys(source)) {
+    sheets[name] = source[name].map((row) => [...row]);
+  }
   const properties = options.properties ?? DEFAULT_PROPERTIES;
-  const recorded: Recorded = { fetches: [], writes: [], logs: [], objectLogs: [], loggerLogs: [] };
+  const recorded: Recorded = {
+    fetches: [],
+    writes: [],
+    logs: [],
+    objectLogs: [],
+    loggerLogs: [],
+    sheetReads: [],
+    sheetRanges: [],
+    calls: [],
+    lockAttempts: [],
+    lockReleases: 0,
+  };
+
+  /** Grid width of a tab, which a user can shrink by deleting columns. */
+  const MAX_COLUMNS = options.maxColumns ?? 26;
 
   const makeSheet = (name: string, rows: SheetRow[]) => ({
-    getLastRow: () => rows.length,
-    getSheetValues: (startRow: number, startCol: number, numRows: number, numCols: number) => {
-      if (startRow < 1 || numRows < 1 || startRow - 1 + numRows > rows.length) {
+    // The real API returns the position of the last row WITH CONTENT, not the
+    // row count: a cleared trailing row is invisible to it.
+    getLastRow: () => {
+      for (let row = rows.length - 1; row >= 0; row--) {
+        if (rows[row].some((cell) => cell !== '' && cell !== undefined && cell !== null)) {
+          return row + 1;
+        }
+      }
+      return 0;
+    },
+    getMaxColumns: () => MAX_COLUMNS,
+    getDataRange: () => {
+      recorded.sheetReads.push(name);
+      recorded.calls.push('read');
+      // The real API is anchored at A1 and bounded by getLastColumn().
+      return { getValues: () => rows.map((row) => [...row]) };
+    },
+    appendRow: (values: SheetRow) => {
+      rows.push([...values]);
+      recorded.calls.push('write');
+      recorded.writes.push({ sheet: name, a1: 'append', values: [values] });
+    },
+    getRange: (rowOrA1: number | string, col?: number, numRows?: number, numCols?: number) => {
+      if (typeof rowOrA1 === 'string') {
+        return {
+          getValues: () => [],
+          setValues: (values: SheetRow[]) => {
+            recorded.writes.push({ sheet: name, a1: rowOrA1, values });
+          },
+        };
+      }
+
+      const startRow = rowOrA1;
+      const startCol = col ?? 1;
+      const height = numRows ?? 1;
+      const width = numCols ?? 1;
+      if (startRow < 1 || startCol < 1 || height < 1 || width < 1) {
+        throw new Error(`The coordinates or dimensions of the range are invalid ("${name}")`);
+      }
+      if (startRow - 1 + height > rows.length || startCol - 1 + width > MAX_COLUMNS) {
         throw new Error(
           `Those rows are out of bounds (sheet "${name}" has ${rows.length} rows, ` +
-            `asked for ${numRows} from row ${startRow})`
+            `asked for ${height} from row ${startRow})`
         );
       }
-      return rows
-        .slice(startRow - 1, startRow - 1 + numRows)
-        .map((row) => Array.from({ length: numCols }, (_, i) => row[startCol - 1 + i] ?? ''));
+      return {
+        getValues: () => {
+          recorded.sheetReads.push(name);
+          recorded.sheetRanges.push(`${name} ${height}x${width} from R${startRow}C${startCol}`);
+          recorded.calls.push('read');
+          return rows
+            .slice(startRow - 1, startRow - 1 + height)
+            .map((row) => Array.from({ length: width }, (_, i) => row[startCol - 1 + i] ?? ''));
+        },
+        setValues: (values: SheetRow[]) => {
+          recorded.writes.push({ sheet: name, a1: `R${startRow}C${startCol}`, values });
+        },
+      };
     },
-    getRange: (a1: string) => ({
-      setValues: (values: SheetRow[]) => {
-        recorded.writes.push({ sheet: name, a1, values });
-      },
-    }),
   });
 
   const frozenTime = options.now === undefined ? undefined : new Date(options.now).getTime();
@@ -201,6 +276,23 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
 
   const sandbox: Record<string, unknown> = {
     console: { log: record(recorded.logs) },
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: (timeoutMs: number) => {
+          recorded.lockAttempts.push(timeoutMs);
+          const granted = options.lockAvailable ?? true;
+          // On the same timeline as reads and writes, so a lock that is taken
+          // and released around nothing is distinguishable from one that
+          // actually guards the write.
+          recorded.calls.push(granted ? 'lock' : 'lock-failed');
+          return granted;
+        },
+        releaseLock: () => {
+          recorded.lockReleases += 1;
+          recorded.calls.push('unlock');
+        },
+      }),
+    },
     ContentService: {
       MimeType: { JSON: 'application/json', TEXT: 'text/plain' },
       createTextOutput: (content: string) => ({
@@ -231,6 +323,7 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     },
     UrlFetchApp: {
       fetch: (url: string, request: FetchRequest) => {
+        recorded.calls.push('send');
         recorded.fetches.push({
           url,
           method: request.method,
