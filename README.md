@@ -4,7 +4,7 @@
 
 ![logo](image/logo.jpg "logo")
 
-**An intelligent LINE chatbot for cocktail discovery and recommendations**
+**A LINE chatbot that looks up cocktails, and the ingredients they are made with**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
@@ -19,34 +19,43 @@
 
 ## Overview
 
-Over Party Lab Chatbot is a production-ready LINE messaging bot built for [Over Party Lab](https://www.instagram.com/over.party.lab/), leveraging Google Apps Script and TypeScript to deliver an interactive cocktail discovery experience. The bot intelligently searches cocktail recipes and provides personalized recommendations based on ingredients.
+A LINE messaging bot for [Over Party Lab](https://www.instagram.com/over.party.lab/), built on
+Google Apps Script and TypeScript, with its cocktail data in a Google Sheet. Send it a cocktail
+name and it answers with the description and the recipe link; send it an ingredient and it offers
+the cocktails made with it.
 
 ## Features
 
 ### Core Capabilities
-- 🔍 **Multilingual Search**: Query cocktail recipes in English or Chinese with fuzzy matching
-- 🎯 **Smart Recommendations**: AI-powered ingredient-based suggestions when exact matches aren't found
-- 🎨 **Rich Interactive UI**: Button templates and carousel cards for enhanced user experience
-- 📊 **Analytics Integration**: Comprehensive user interaction logging to Google Sheets
-- 🚀 **Serverless Architecture**: Zero-maintenance deployment with Google Apps Script
+- 🔍 **Bilingual lookup**: matches a cocktail by its Chinese or English name, ignoring case,
+  surrounding whitespace and numerically formatted cells
+- 🎯 **Ingredient fallback**: when nothing matches by name, looks the message up in an ingredient
+  table and offers the cocktails it maps to
+- 🎨 **Buttons template**: up to 4 tappable options, clamped to every Messaging API payload limit so
+  a long name or a long message can never make LINE reject the reply
+- 📊 **Search log**: every answered message is appended to a Google Sheet
+- 💸 **Free to answer**: replies go through the Reply API, which does not count against the LINE
+  Official Account's monthly message quota
+- 🔒 **Authenticated webhook**: Apps Script cannot verify `x-line-signature`, so requests are
+  authenticated by a shared secret in the URL plus a `destination` check
 
 ### Technical Highlights
-- Type-safe development with TypeScript
-- Modular service architecture for maintainability
-- Automated deployment pipeline with clasp
-- Real-time webhook integration with LINE Messaging API
-- Scalable data storage with Google Sheets
+- TypeScript bundled to a single Apps Script file with esbuild, type-checked in strict mode
+- 126 tests that run the **built bundle** in a sandbox with the Apps Script APIs stubbed
+- CI on every pull request and on pushes to `master`: `npm ci` → typecheck → test → build
+- Secrets in script properties, never in source
 
 ## Tech Stack
 
 | Category | Technology |
 |----------|-----------|
-| **Runtime** | Google Apps Script |
+| **Runtime** | Google Apps Script (V8) |
 | **Language** | TypeScript 5.7+ |
-| **Messaging Platform** | LINE Messaging API |
+| **Messaging Platform** | LINE Messaging API (Reply API) |
 | **Data Storage** | Google Sheets |
-| **Build Tool** | clasp (Command Line Apps Script Projects) |
-| **Type Definitions** | @types/google-apps-script |
+| **Bundler** | esbuild |
+| **Deploy Tool** | clasp (Command Line Apps Script Projects) |
+| **Tests** | vitest, against the built bundle |
 
 ## Architecture
 
@@ -55,47 +64,37 @@ The bot follows a serverless, event-driven architecture:
 ```
 ┌─────────────────┐
 │   LINE User     │
-│   (Client)      │
 └────────┬────────┘
-         │ Message
+         │ message
          ▼
-┌─────────────────────────────────────────┐
-│         LINE Messaging API              │
-│         (Webhook Trigger)               │
-└────────┬────────────────────────────────┘
-         │ HTTP POST
+┌──────────────────────────────────────────────────┐
+│              LINE Messaging API                  │
+└────────┬─────────────────────────────▲───────────┘
+         │ POST …/exec?token=SECRET    │ reply (free, single-use token)
+         ▼                             │
+┌──────────────────────────────────────┴───────────┐
+│           Google Apps Script web app             │
+│                                                  │
+│  doPost(e)                                       │
+│   1. token       vs WEBHOOK_TOKEN  ── reject ──▶ 200
+│   2. destination vs BOT_USER_ID    ── reject ──▶ 200
+│   3. for each event: text messages only          │
+│        buildReply()  ─ lookup, then fallback     │
+│        lineMessage   ─ clamp to API limits       │
+│        lineService   ─ POST /message/reply       │
+│        sheetService  ─ append the search         │
+│   4. always 200 {"status":"ok"}                  │
+└────────┬─────────────────────────────────────────┘
+         │ one read per tab per delivery; one append per event
          ▼
-┌─────────────────────────────────────────┐
-│     Google Apps Script (Server)         │
-│  ┌─────────────────────────────────┐   │
-│  │  doPost() - Webhook Handler     │   │
-│  └──────────┬──────────────────────┘   │
-│             │                            │
-│  ┌──────────▼──────────┐                │
-│  │  Message Processing │                │
-│  │  - Parse input      │                │
-│  │  - Search logic     │                │
-│  │  - Response builder │                │
-│  └──────────┬──────────┘                │
-│             │                            │
-│  ┌──────────▼──────────┐                │
-│  │  Service Layer      │                │
-│  │  - lineService      │                │
-│  │  - sheetService     │                │
-│  │  - logService       │                │
-│  └──────────┬──────────┘                │
-└─────────────┼──────────────────────────┘
-              │
-              ▼
-┌──────────────────────────────────────────┐
-│        Google Sheets (Database)          │
-│  ┌────────────┐  ┌──────────────────┐   │
-│  │ DRINK_LIST │  │ ELEMENT_MAPPING  │   │
-│  └────────────┘  └──────────────────┘   │
-│  ┌────────────┐                          │
-│  │USER_ACTION │  (Analytics)             │
-│  └────────────┘                          │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                 Google Sheets                    │
+│  DRINK_LIST     ELEMENT_MAPPING     USER_ACTION  │
+│  (cocktails)    (ingredient → idx)  (search log) │
+└──────────────────────────────────────────────────┘
+
+Secrets (channel token, spreadsheet id, webhook token, bot user id)
+live in Apps Script script properties, never in the source.
 ```
 
 ## Prerequisites
@@ -103,7 +102,8 @@ The bot follows a serverless, event-driven architecture:
 Before you begin, ensure you have the following:
 
 - **Node.js**: v20.0.0 or later ([Download](https://nodejs.org/)) — required by clasp 3.x
-- **Package Manager**: npm (comes with Node.js) or yarn
+- **Package Manager**: npm. The repository ships a `package-lock.json` and CI runs `npm ci`, so
+  installing with yarn would desynchronise the lockfile
 - **Google Account**: For Google Apps Script and Sheets access
 - **LINE Developer Account**: [Register here](https://developers.line.biz/)
 - **LINE Messaging API Channel**: [Create a channel](https://developers.line.biz/console/)
@@ -121,9 +121,10 @@ npm install
 # Login to Google Account
 npx clasp login
 
-# Create the Apps Script project, then point clasp at the build output
-npx clasp create --type webapp --title "Over Party Lab Chatbot"
-# edit .clasp.json and add: "rootDir": "dist"
+# Create the Apps Script project with the build output as its root
+# (`--type webapp` is rejected by clasp 3.x; the project is a web app because
+#  appsscript.json says so, not because of a flag)
+npx clasp create-script --title "Over Party Lab Chatbot" --rootDir dist
 
 # Bundle TypeScript -> dist/Code.js and upload
 npm run push
@@ -147,13 +148,14 @@ npm install
 # Login to Google Account
 npx clasp login
 
-# Create a new Apps Script project (or clone existing one)
-npx clasp create --type webapp --title "Over Party Lab Chatbot"
+# Create a new Apps Script project, with dist/ as the directory clasp uploads.
+# Do not pass `--type webapp`: clasp 3.x rejects it with "Invalid container
+# file type". What makes this a web app is the `webapp` block in
+# appsscript.json, which is already committed.
+npx clasp create-script --title "Over Party Lab Chatbot" --rootDir dist
 
-# Or clone existing project
-npx clasp clone <SCRIPT_ID>
-
-# Then add "rootDir": "dist" to the generated .clasp.json
+# Or adopt an existing project
+npx clasp clone-script <SCRIPT_ID> --rootDir dist
 ```
 
 ### 3. Configure Environment
@@ -171,7 +173,7 @@ Open the Apps Script project (`npx clasp open-script`) and go to
 | `SPREADSHEET_ID` | The `{SHEET_ID}` part of `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit` |
 | `WEBHOOK_TOKEN` | A random secret you generate: `openssl rand -hex 24`. Keep it URL-safe (`[A-Za-z0-9._~-]`) and free of leading or trailing whitespace — the comparison is exact, and a stray space fails silently with a `200`. It is appended to the webhook URL and every request must carry it |
 | `BOT_USER_ID` | This bot's own user ID, shown as **Your user ID** in LINE Developers Console → your channel → Basic settings. Every delivery's `destination` must equal it |
-| `DEBUG_USER_ID` | Your own LINE user ID; only used by `test_send()` |
+| `DEBUG_USER_ID` | Your own LINE user ID; used by `test_post()` and `test_send()` |
 
 If a property is missing, the execution fails with
 `ConfigurationError: Missing script property "<KEY>"` — the webhook returns an error and LINE's
@@ -181,38 +183,51 @@ If a property is missing, the execution fails with
 ### 4. Setup Google Sheets
 
 1. Create a new Google Sheet
-2. Create three tabs with the following structure:
+2. Create three tabs, each with a header row, laid out as follows. The bot always treats **row 1 as
+   a header** and reads from row 2 onwards.
 
 #### Tab 1: DRINK_LIST
 Stores cocktail recipes and information.
 
 | Column | Type | Description | Example |
 |--------|------|-------------|---------|
-| name | Text | Chinese cocktail name | 瑪格麗特 |
-| nameen | Text | English cocktail name | Margarita |
-| link | URL | Recipe link | https://... |
-| detail | Text | Cocktail description | 經典龍舌蘭調酒... |
+| A `name` | Text | Chinese cocktail name | 瑪格麗特 |
+| B `nameen` | Text | English cocktail name | Margarita |
+| C `link` | URL | Recipe link | https://... |
+| D `detail` | Text | Cocktail description | 經典龍舌蘭調酒... |
 
 #### Tab 2: ELEMENT_MAPPING
-Maps ingredients to recommended cocktails.
+Maps an ingredient to the cocktails made with it.
 
 | Column | Type | Description | Example |
 |--------|------|-------------|---------|
-| name | Text | Chinese ingredient name | 龍舌蘭 |
-| nameen | Text | English ingredient name | Tequila |
-| recommendation | Text | Recommended cocktail names (comma-separated) | 瑪格麗特,龍舌蘭日出 |
+| A `name` | Text | Chinese ingredient name | 龍舌蘭 |
+| B `nameen` | Text | English ingredient name | Tequila |
+| C, D | — | Unused; leave empty | |
+| E `recommendation` | Text | Comma-separated **0-based row indices** into `DRINK_LIST` | `0,2` |
+
+> **The `recommendation` cell holds indices, not names.** `0` is the first *data* row of
+> `DRINK_LIST` (spreadsheet row 2), `1` the second, and so on. Non-numeric or out-of-range entries
+> are skipped; if none survives, the user gets the not-found reply. Note that inserting or deleting
+> a `DRINK_LIST` row shifts every index after it.
+>
+> The column positions above are fixed by `COLUMN_KEY_MAPPING` in [config.ts](config.ts), which
+> applies to **every** tab — which is why `recommendation` is column E here even though C and D are
+> unused.
 
 #### Tab 3: USER_ACTION
-Automatically logs user interactions (no manual setup needed).
+Needs only its header row; the bot fills in every data row itself. The header is required — the
+index is derived from the row position, so without it every index is off by one.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| index | Number | 0-based row counter, assigned under a script lock so concurrent deliveries cannot collide |
+| index | Number | 0-based row counter, assigned under a short script lock. If the lock cannot be taken within 500 ms the write still goes ahead, so the index may repeat rather than the row being lost |
 | search | Text | User search query (trimmed) |
 | user | Text | LINE User ID; empty for group/room events without one |
 | time | Datetime | Timestamp |
 
-3. Copy the Google Sheet ID from the URL into the `SPREADSHEET_ID` script property (step 3)
+3. Copy the Google Sheet ID from the URL into the `SPREADSHEET_ID` script property
+   (see [Configure Environment](#3-configure-environment))
 
 ### 5. Build and Deploy
 
@@ -230,10 +245,11 @@ npx clasp deploy
 
 ### 6. Configure LINE Webhook
 
-1. After deployment, get your web app URL:
+1. Deploy, and note the deployment ID — clasp 3.x prints `Deployed <deploymentId> @HEAD` and no
+   URL:
    ```bash
-   npx clasp deploy
-   # Copy the Web app URL from the output
+   npx clasp create-deployment
+   # or, to list the existing ones: npx clasp list-deployments
    ```
 
 2. Append the shared secret to it. Apps Script web apps cannot read request
@@ -299,21 +315,24 @@ evaluates `dist/Code.js` inside a `node:vm` context with `SpreadsheetApp`, `UrlF
 are invoked by *global function name*, exactly as Apps Script resolves them, so the bundling step is
 covered too — a build that Apps Script could not execute fails the suite.
 
-What is asserted: the packaging contract (no `import`/`export`/`require` in the bundle, entry points
-present as top-level functions, no post-ES2019 syntax), the reply flow (exact match, case- and
-whitespace-insensitive English match, ingredient recommendations, not-found fallback), the
-`USER_ACTION` write, malformed webhook payloads being ignored without sending anything, and
-fail-loud behaviour when a script property is unset.
+What is asserted: the packaging contract (no `import`/`export`/`require` in the bundle, entry
+points present as top-level functions, a build target of ES2019 with the bundle grepped for newer
+syntax), the reply flow (exact match, case- and whitespace-insensitive English match, ingredient
+recommendations, not-found fallback), the `USER_ACTION` append, malformed webhook payloads being
+ignored without sending anything, and fail-loud behaviour when a script property is unset.
 
-`debug.ts` still provides `test_post()` and `test_send()` for manual checks against the live LINE
-channel: open the Apps Script editor, select the function and click **Run**. These need the
-`DEBUG_USER_ID` script property and really do send a message, so they are not part of `npm test`.
+`debug.ts` provides `test_post()` and `test_send()` for manual checks from the Apps Script editor:
+select the function and click **Run**. Both need the `DEBUG_USER_ID` script property and both hit
+the live Messaging API, which is why they are not part of `npm test`. `test_send()` really does
+push a message to you; `test_post()`'s reply fails with `Invalid reply token` — real tokens only
+come from real deliveries — but it still writes a row to `USER_ACTION`.
 
 ### Local Development Tips
 
-- **Type checking**: Run `npm run typecheck` to check for TypeScript errors before pushing
-- **Auto-formatting**: Use Prettier or similar formatter for consistent code style
-- **Watch mode**: Use `npm run watch` during active development for automatic deployment
+- **Before pushing**: `npm run typecheck && npm test` — the same commands CI runs
+- **No formatter is configured**; match the surrounding style rather than reformatting a file
+- **Watch mode**: `npm run watch` rebuilds on change; run `npx clasp push --watch` alongside it to
+  upload automatically
 
 ## Project Structure
 
@@ -328,22 +347,35 @@ over-party-lab-chatbot/
 │   └── appsscript.json        # Google Apps Script manifest
 │
 ├── 🔧 Service Layer
-│   ├── lineService.ts         # LINE Messaging API integration
-│   ├── sheetService.ts        # Google Sheets data operations
-│   ├── logService.ts          # User activity logging
-│   └── timeService.ts         # Timestamp formatting utilities
+│   ├── lineService.ts         # LINE Messaging API client (reply / push)
+│   ├── lineMessage.ts         # Message objects and the API's payload limits
+│   ├── sheetService.ts        # Google Sheets reads and the analytics append
+│   ├── logService.ts          # Execution logging
+│   └── timeService.ts         # Timestamp formatting
 │
 ├── 📝 Resources
-│   ├── wording.ts             # Message templates and response texts
-│   └── debug.ts               # Testing and debugging utilities
+│   ├── wording.ts             # User-facing strings
+│   └── debug.ts               # Manual entry points for the Apps Script editor
+│
+├── 🧪 Tests
+│   ├── tests/gasHarness.ts    # Runs dist/Code.js with the Apps Script APIs stubbed
+│   ├── tests/bundle.test.ts   # End-to-end behaviour of the built bundle
+│   ├── tests/lineMessage.test.ts   # Payload limits
+│   ├── tests/buildConfig.test.ts   # Build contract and the clasp rootDir guard
+│   └── tests/globalSetup.ts   # Builds the bundle before the suite runs
 │
 ├── ⚙️ Configuration
-│   ├── package.json           # Node.js dependencies and scripts
-│   ├── tsconfig.json          # TypeScript compiler configuration
+│   ├── package.json           # Dependencies and scripts
+│   ├── tsconfig.json          # Strict compiler options for the sources
+│   ├── tsconfig.test.json     # Same, plus node types, for the tests
+│   ├── vitest.config.mts      # Test runner configuration
 │   ├── scripts/build.mjs      # esbuild bundler: sources -> dist/Code.js
+│   ├── scripts/buildConfig.mjs   # Build contract: target, entry points, rootDir guard
+│   ├── .github/workflows/ci.yml  # npm ci -> typecheck -> test -> build
 │   └── .gitignore             # Git ignore rules
 │
 └── 📁 Other
+    ├── CLAUDE.md              # Workflow and platform notes for coding agents
     ├── dist/                  # Build output uploaded by clasp (git-ignored)
     └── image/                 # Project assets (logo, screenshots)
 ```
@@ -352,35 +384,40 @@ over-party-lab-chatbot/
 
 | File | Purpose |
 |------|---------|
-| `app.ts` | Entry point with `doPost()` webhook handler |
-| `lineService.ts` | Handles LINE API calls (push messages, buttons, carousels) |
-| `sheetService.ts` | CRUD operations for Google Sheets data |
-| `wording.ts` | Centralized message templates for consistency |
-| `debug.ts` | Testing functions for local development |
+| `main.ts` | Bundle entry point; declares the Apps Script globals |
+| `app.ts` | `doPost()`: authentication, event filtering, reply flow |
+| `lineService.ts` | Messaging API calls, with `muteHttpExceptions` so errors are readable |
+| `lineMessage.ts` | Builds text and buttons-template messages within the API's limits |
+| `sheetService.ts` | One read per tab per execution; atomic analytics append |
+| `properties.ts` | Script-property accessors that fail loudly when unset |
+| `wording.ts` | Centralised user-facing strings |
+| `debug.ts` | `test_post()` / `test_send()` for manual checks from the editor |
 
 ## How It Works
 
 ### Message Flow
 
 ```
-1. User sends message (e.g., "Margarita")
+1. User sends a message (e.g. "Margarita")
    ↓
-2. LINE Platform receives message
+2. LINE Platform POSTs the delivery to the webhook URL, secret included
    ↓
-3. Webhook POST → doPost(e) in app.ts
+3. doPost(e) checks the token, then the delivery's `destination`
    ↓
-4. Parse message and extract search query
+4. For each event: keep text messages only, require a reply token, trim the text
    ↓
-5. Search DRINK_LIST sheet for exact match
+5. Look the text up in DRINK_LIST (name or nameen, case- and space-insensitive)
    ↓
-6a. ✅ Match found                    6b. ❌ No match found
-    → Return cocktail details              → Search ELEMENT_MAPPING
-    → Include recipe link                  → Find ingredient recommendations
-    → Send text message                    → Send button template with options
+6a. ✅ Row found                       6b. ❌ No row
+    → echo, detail and link as text        → look the text up in ELEMENT_MAPPING
+                                           → resolve its indices to cocktail names
+                                           → up to 4 buttons, or the not-found reply
    ↓
-7. Log user action to USER_ACTION sheet
+7. Reply through the Reply API (free; the token is single-use)
    ↓
-8. Response delivered to user
+8. Append the search to USER_ACTION — after the reply, so it can never delay it
+   ↓
+9. Return 200 {"status":"ok"}, whatever happened
 ```
 
 ### Search Logic
@@ -474,19 +511,23 @@ Configuration for Google Apps Script deployment:
 
 ```json
 {
-  "timeZone": "Asia/Hong_Kong",
+  "timeZone": "Asia/Taipei",
+  "runtimeVersion": "V8",
   "webapp": {
-    "access": "ANYONE_ANONYMOUS",  // Allow public webhook access
-    "executeAs": "USER_DEPLOYING"  // Run as deploying user
+    "access": "ANYONE_ANONYMOUS",
+    "executeAs": "USER_DEPLOYING"
   },
-  "exceptionLogging": "STACKDRIVER"  // Enable Google Cloud logging
+  "exceptionLogging": "STACKDRIVER"
 }
 ```
 
 **Key Settings**:
-- `timeZone`: Adjust for your region (affects timestamp logging)
-- `access`: Must be `ANYONE_ANONYMOUS` for LINE webhook
-- `executeAs`: `USER_DEPLOYING` ensures proper permissions
+- `timeZone`: affects the `USER_ACTION` timestamps, which are formatted from the script's local time
+- `runtimeVersion`: must stay `V8`. The bundle targets ES2019, which the legacy Rhino runtime cannot
+  parse; [tests/bundle.test.ts](tests/bundle.test.ts) asserts this key on the built manifest
+- `access`: must be `ANYONE_ANONYMOUS`, because LINE posts anonymously. Requests are authenticated
+  by the `?token=` secret and the `destination` check instead
+- `executeAs`: `USER_DEPLOYING`, so the script reaches the deployer's spreadsheet
 
 ## Troubleshooting
 
@@ -542,10 +583,10 @@ npm install
    - Click **View** > **Executions**
    - Check recent execution logs for errors
 
-2. **Test Locally**:
-   - Use `debug.ts` functions to test without LINE
-   - Run `test_post()` to simulate webhook
-   - Run `test_send()` to test message sending
+2. **Run the debug entry points from the editor**:
+   - `test_post()` drives the whole flow, including the real spreadsheet; its reply fails with
+     `Invalid reply token`, so check the log for the payload it built
+   - `test_send()` pushes a real message to `DEBUG_USER_ID`
 
 3. **Enable Verbose Logging**:
    - Add `console.log()` statements in your code
@@ -572,9 +613,12 @@ Contributions are welcome! Here's how you can help:
    - Add comments for complex logic
    - Update documentation if needed
 
-4. **Test your changes**
-   - Test locally using debug functions
-   - Ensure no TypeScript errors: `npx tsc --noEmit`
+4. **Verify your changes**
+   ```bash
+   npm run typecheck && npm test
+   ```
+   Both must pass, and CI runs them on every pull request. `debug.ts` is for manual checks against
+   the live channel, not a substitute.
 
 5. **Commit with clear messages**
    ```bash
@@ -590,18 +634,20 @@ Contributions are welcome! Here's how you can help:
 ### Contribution Guidelines
 
 - Write clean, readable code
-- Maintain type safety (avoid `any` types)
-- Add JSDoc comments for public functions
+- Maintain type safety: no `any`, no unchecked casts for reading external input
+- Add JSDoc comments for public functions, and say *why* rather than *what*
 - Keep dependencies minimal
-- Test thoroughly before submitting PR
+- Every behavioural change needs a test that fails before it and passes after it
+- Respect the platform constraints in [CLAUDE.md](CLAUDE.md) — several are not obvious and have
+  each caused a real bug here
 
 ### Areas for Contribution
 
-- 🌐 Add more language support
-- 🎨 Improve message templates and UI
-- 📊 Enhanced analytics and reporting
-- 🧪 Add unit tests
-- 📝 Improve documentation
+- 🌐 More language support
+- 🎨 Better message templates and UI, e.g. quick replies instead of a 4-button template
+- 📊 Richer analytics
+- 🔁 Redelivery de-duplication ([#31](https://github.com/sean1093/over-party-lab-chatbot/issues/31))
+- 📝 Documentation
 - 🐛 Bug fixes and performance improvements
 
 ## License
@@ -619,26 +665,35 @@ Yes! The architecture is generic. Simply modify:
 
 ### How much does it cost to run?
 
-**$0** - Both Google Apps Script and LINE Messaging API offer free tiers sufficient for most small to medium bots.
+Nothing, for a small bot. Google Apps Script's free quotas cover it, and — because the bot answers
+with the **Reply API** — replies do not count against the LINE Official Account's monthly message
+allowance. Only `test_send()` in [debug.ts](debug.ts) sends a push message, which does count.
 
 ### Can I add image/video responses?
 
-Yes! LINE Messaging API supports rich media. See [LINE Message Types](https://developers.line.biz/en/docs/messaging-api/message-types/) for implementation details.
+Yes. Add the message object to [lineMessage.ts](lineMessage.ts), with its limits, and return it
+from `buildReply`. See [LINE Message Types](https://developers.line.biz/en/docs/messaging-api/message-types/).
 
 ### How do I scale for more users?
 
-Google Apps Script has daily quotas. For high-traffic bots, consider:
-- Using Google Cloud Functions
-- Implementing caching
-- Optimizing Sheets queries
-- Migrating to a database (Firebase, MongoDB)
+Per webhook delivery the cost is one Sheets read **per tab**, however many events the delivery
+carries, because each tab is read once per execution and cached in memory. The reply and the
+`USER_ACTION` append are **per text-message event**. Before reaching for a rewrite, check the real
+limits:
+
+- LINE records a `request_timeout` error if the bot server does not respond within **2 seconds**,
+  so the response budget is the first thing to run out.
+- Apps Script allows 6 minutes per execution and a limited number of simultaneous executions.
+- Sheets and UrlFetch have daily quotas.
+
+If a bigger sheet or heavier traffic does become the bottleneck, cache the tabs across executions
+with `CacheService`, or move the data to a real database.
 
 ### Can I deploy multiple bots from this code?
 
-Yes! Clone the project, use different:
-- LINE channels
-- Google Sheets
-- Apps Script deployments
+Yes. Use a separate Apps Script deployment per bot, each with its own script properties (channel
+token, spreadsheet, `WEBHOOK_TOKEN`, `BOT_USER_ID`) and its own LINE channel. Do not share a
+`WEBHOOK_TOKEN` between deployments.
 
 ## Resources
 
