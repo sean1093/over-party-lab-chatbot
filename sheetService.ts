@@ -4,15 +4,12 @@ import properties, { isConfigurationError } from './properties';
 import timeService from './timeService';
 
 interface SaveData {
-  search: string;
-  user: string;
-};
+    search: string;
+    user: string;
+}
 
-interface QueryCriteria {
-    select: Array<ColumnKey>;
-    from: string;
-    where: Partial<Record<ColumnKey, string>>;
-};
+/** A matched row, limited to the requested columns. */
+export type SheetRow = Partial<Record<ColumnKey, string>>;
 
 /**
  * Opened lazily: the spreadsheet ID comes from a script property, and reading
@@ -36,85 +33,99 @@ const getSpreadSheet = (): GoogleAppsScript.Spreadsheet.Spreadsheet => {
  */
 const formatText = (text: unknown): string => (text ? String(text).trim().toLowerCase() : '');
 
+/** Values of one column, excluding the header row. */
+const columnData = (
+    sheet: GoogleAppsScript.Spreadsheet.Sheet,
+    rowCount: number,
+    colName: ColumnKey
+): string[] => {
+    const firstCol = CONFIG.COLUMN_KEY_MAPPING[colName];
+    return sheet
+        .getSheetValues(2, firstCol, rowCount, 1)
+        .map((row) => (row[0] === '' || row[0] === null || row[0] === undefined ? '' : String(row[0])));
+};
+
+/** 0-based index of the first value equal to `target`, or -1. */
+const indexOfValue = (values: string[], target: string): number => {
+    for (let i = 0; i < values.length; i++) {
+        if (target === formatText(values[i])) {
+            return i;
+        }
+    }
+    return -1;
+};
+
 const sheetService = {
-    query: (params: QueryCriteria): object => {
+    /**
+     * First row where any of the `where` columns equals the given value,
+     * limited to the `select` columns; `null` when nothing matches.
+     */
+    findRow: (from: string, where: SheetRow, select: ColumnKey[]): SheetRow | null => {
         try {
-            logService.log('[sheetService.query] Query data');
-            const { select, from, where } = params;
+            logService.log(`[sheetService.findRow] ${from}`);
             const sheet = getSpreadSheet().getSheetByName(from);
 
             if (!sheet) {
-                logService.log(`[sheetService.query] Error: Sheet "${from}" not found`);
-                return {};
+                logService.log(`[sheetService.findRow] Error: Sheet "${from}" not found`);
+                return null;
             }
 
-            const lastRow = sheet.getLastRow();
-            const rowCount = lastRow - 1;
-            const result: any = {};
-
-            if (where && Object.keys(where).length > 0) {
-                let find = -1;
-                for (const i of Object.keys(where) as Array<ColumnKey>) {
-                    const elementArray = sheetService.getColumnData(sheet, rowCount, i);
-                    const value = formatText(where[i] as string);
-                    find = sheetService.findElement(elementArray, value);
-                    if (find !== -1) {
-                        break;
-                    }
-                }
-                logService.log(find);
-                for (let i = 0; i < select.length; i++) {
-                    const elementArray = sheetService.getColumnData(sheet, rowCount, select[i]);
-                    result[select[i]] = elementArray[(find - 1)];
-                }
-                logService.log(result);
-            } else {
-                for (let i = 0; i < select.length; i++) {
-                    const elementArray = sheetService.getColumnData(sheet, rowCount, select[i]);
-                    result[select[i]] = elementArray;
-                }
+            const rowCount = sheet.getLastRow() - 1;
+            if (rowCount < 1) {
+                return null;
             }
 
-            logService.log('[sheetService.query] Query data finish');
-            return result;
+            let found = -1;
+            for (const column of Object.keys(where) as ColumnKey[]) {
+                const value = formatText(where[column]);
+                // An empty search value would match the first blank cell in the
+                // column and leak an unrelated row.
+                if (!value) {
+                    continue;
+                }
+                found = indexOfValue(columnData(sheet, rowCount, column), value);
+                if (found !== -1) {
+                    break;
+                }
+            }
+            if (found === -1) {
+                logService.log(`[sheetService.findRow] ${from}: no match`);
+                return null;
+            }
+
+            const row: SheetRow = {};
+            for (const column of select) {
+                row[column] = columnData(sheet, rowCount, column)[found];
+            }
+            logService.log(row);
+            return row;
         } catch (error) {
             // A misconfigured deployment must fail loudly, not answer "not found".
             if (isConfigurationError(error)) throw error;
-            logService.log('[sheetService.query] Error: ' + errorMessage(error));
-            return {};
+            logService.log('[sheetService.findRow] Error: ' + errorMessage(error));
+            return null;
         }
-    },
-    /**
-     * Gets column data from a sheet
-     * @param sheet - The Google Sheet object
-     * @param rowCount - Number of rows to retrieve
-     * @param colName - Column name as defined in COLUMN_KEY_MAPPING
-     * @returns Array of values from the specified column
-     */
-    getColumnData: (sheet: GoogleAppsScript.Spreadsheet.Sheet, rowCount: number, colName: ColumnKey): Array<any> => {
-        const firstCol = CONFIG.COLUMN_KEY_MAPPING[colName];
-        const rawData = sheet.getSheetValues(2, firstCol, rowCount, 1);
-        let array: Array<any> = [];
-        for(let i = 0; i < rawData.length; i++) {
-            array = array.concat(rawData[i]);
-        }
-        return array;
     },
 
-    /**
-     * Finds an element in an array (case-insensitive)
-     * @param targetArray - Array to search in
-     * @param target - Target string to find
-     * @returns 1-based index if found, -1 otherwise
-     */
-    findElement: (targetArray: Array<any>, target: string): number => {
-        for(let i = 0; i < targetArray.length; i++) {
-            if (target === formatText(targetArray[i])) {
-                return i + 1;
+    /** Every value of one column, excluding the header row. */
+    columnValues: (from: string, colName: ColumnKey): string[] => {
+        try {
+            const sheet = getSpreadSheet().getSheetByName(from);
+
+            if (!sheet) {
+                logService.log(`[sheetService.columnValues] Error: Sheet "${from}" not found`);
+                return [];
             }
+
+            const rowCount = sheet.getLastRow() - 1;
+            return rowCount < 1 ? [] : columnData(sheet, rowCount, colName);
+        } catch (error) {
+            if (isConfigurationError(error)) throw error;
+            logService.log('[sheetService.columnValues] Error: ' + errorMessage(error));
+            return [];
         }
-        return -1;
     },
+
     save: (params: SaveData): void => {
         try {
             logService.log('[sheetService.save] Save user action');
@@ -129,7 +140,7 @@ const sheetService = {
             // insert config
             const lastRow = userActionSheet.getLastRow();
             const insertRow = lastRow + 1;
-            const range = userActionSheet.getRange(SHEET_NAME_USER+'!A'+insertRow+':D'+insertRow);
+            const range = userActionSheet.getRange(SHEET_NAME_USER + '!A' + insertRow + ':D' + insertRow);
 
             // get insert value
             const index = insertRow - 2; // start from 0

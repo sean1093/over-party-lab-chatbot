@@ -378,65 +378,75 @@ The bot implements a two-tier search strategy:
 
 1. **Exact Match Search** (Primary):
    - Searches both `name` (Chinese) and `nameen` (English) columns
-   - Case-insensitive matching
-   - Returns full cocktail details with recipe link
+   - Case-insensitive, whitespace-insensitive, and tolerant of numerically
+     formatted cells
+   - Returns the cocktail's description and recipe link
 
 2. **Ingredient-Based Recommendations** (Fallback):
-   - Searches ELEMENT_MAPPING for partial matches
-   - Returns up to 5 recommended cocktails
-   - Presented as interactive buttons for easy selection
+   - Looks the message up in `ELEMENT_MAPPING` (exact match, same rules)
+   - The `recommendation` cell holds comma-separated 0-based indices into the
+     `DRINK_LIST` name column; stale or non-numeric entries are dropped
+   - At most **4** are offered, the LINE maximum for a buttons template
+   - Falls back to the not-found reply when nothing can be offered
 
 ## API Reference
 
 ### Core Functions
 
-#### `doPost(e: GoogleAppsScript.Events.DoPost)`
-Webhook handler that processes incoming LINE messages.
-
-```typescript
-function doPost(e: GoogleAppsScript.Events.DoPost): GoogleAppsScript.Content.TextOutput
-```
-
-**Parameters**:
-- `e`: Event object containing the POST request data from LINE
-
-**Returns**: TextOutput with status 200
+#### `doPost(e: unknown): void`
+Webhook handler that processes incoming LINE messages. Reads
+`e.postData.contents`, replies through the Reply API and appends a row to
+`USER_ACTION`. Throws only on a missing script property, so a misconfigured
+deployment surfaces as a failed execution.
 
 ---
 
-#### `lineService.pushMsg(config: PushMessageConfig)`
-Sends messages to LINE users via Messaging API.
+#### `lineService.reply(replyToken: string, messages: Message[]): SendResult`
+Answers a webhook event. Reply messages are free of charge and work for group
+and room events, where `source.userId` may be absent. Reply tokens are
+single-use and expire about a minute after delivery.
+
+#### `lineService.push(to: string, messages: Message[]): SendResult`
+Sends an unsolicited message. Counts against the monthly quota, so it is only
+used by `debug.ts`, which has no reply token.
 
 ```typescript
-interface PushMessageConfig {
-  to: string;           // LINE User ID
-  messages: Message[];  // Array of message objects
+interface SendResult {
+  ok: boolean;
+  status: number;
+  body: string;
 }
 ```
 
 ---
 
-#### `sheetService.query(params: QueryParams)`
-Queries Google Sheets for cocktail or ingredient data.
+#### `lineMessage.textMessages(...contents): Message[]`
+Builds text messages, skipping blank content (LINE rejects `text: ''`).
 
-```typescript
-interface QueryParams {
-  sheetName: string;    // Sheet tab name (e.g., 'DRINK_LIST')
-  searchValue: string;  // Search query
-  searchColumn?: number; // Column index to search
-}
-```
+#### `lineMessage.recommendationMessage(names, userMessage): Message | null`
+Builds the buttons template, clamped to the Messaging API limits (4 actions,
+40-character title, 20-character labels, 400-character `altText`). Returns
+`null` when there is nothing to offer, because a zero-action template is
+rejected with `400`.
 
 ---
 
-#### `sheetService.save(params: SaveParams)`
-Logs user actions to the USER_ACTION sheet.
+#### `sheetService.findRow(from, where, select): SheetRow | null`
+First row of `from` where any `where` column matches, limited to the `select`
+columns. `null` when nothing matches.
+
+#### `sheetService.columnValues(from, colName): string[]`
+Every value of one column, excluding the header row.
+
+#### `sheetService.save(params: SaveData): void`
+Appends `[index, search, user, timestamp]` to `USER_ACTION`.
 
 ```typescript
-interface SaveParams {
+type SheetRow = Partial<Record<ColumnKey, string>>;
+
+interface SaveData {
   search: string;       // User's search query
   user: string;         // LINE User ID
-  timestamp: string;    // Formatted timestamp
 }
 ```
 
