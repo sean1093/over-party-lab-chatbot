@@ -9,6 +9,7 @@ import {
   replyTexts,
   textMessageEvent,
   webhookBody,
+  withToken,
 } from './gasHarness';
 import type { SheetService } from './gasHarness';
 
@@ -301,8 +302,8 @@ describe('doPost: analytics', () => {
 describe('doPost: malformed input is ignored without sending anything', () => {
   it.each([
     ['no argument', undefined],
-    ['no postData', {}],
-    ['unparseable body', { postData: { contents: '{not json' } }],
+    ['no postData', withToken({})],
+    ['unparseable body', withToken({ postData: { contents: '{not json' } })],
     ['empty events array', webhookBody([])],
     [
       'event without source',
@@ -441,7 +442,7 @@ describe('doPost: webhook response', () => {
   it.each([
     ['a text message', textMessageEvent('伍迪')],
     ['the empty events array LINE verifies with', webhookBody([])],
-    ['an unparseable body', { postData: { contents: '{not json' } }],
+    ['an unparseable body', withToken({ postData: { contents: '{not json' } })],
     ['no argument at all', undefined],
   ])('returns a JSON 200 for %s', (_name, event) => {
     const harness = loadBundle();
@@ -477,10 +478,11 @@ describe('doPost: webhook response', () => {
   it('tolerates an events property that is not an array', () => {
     const harness = loadBundle();
     // `for...of` over a non-iterable throws, which would surface to LINE as a
-    // 500 and put the webhook at risk of being disabled.
-    expect(() =>
-      harness.doPost({ postData: { contents: '{"destination":"U0","events":{}}' } })
-    ).not.toThrow();
+    // 500 and put the webhook at risk of being disabled. The request has to be
+    // authentic, or it never reaches the parser this defends.
+    const body = JSON.stringify({ destination: DEFAULT_PROPERTIES.BOT_USER_ID, events: {} });
+    expect(() => harness.doPost(withToken({ postData: { contents: body } }))).not.toThrow();
+    expect(harness.recorded.logs).toContain('[parseDelivery] body carries no event array');
     expect(harness.recorded.fetches).toHaveLength(0);
   });
 });
@@ -488,7 +490,7 @@ describe('doPost: webhook response', () => {
 describe('logging', () => {
   it('writes the same lines to console and to Logger', () => {
     const harness = loadBundle();
-    harness.doPost({ postData: { contents: '{not json' } });
+    harness.doPost(withToken({ postData: { contents: '{not json' } }));
 
     expect(harness.recorded.logs).toContain('[doPost]');
     expect(harness.recorded.loggerLogs).toEqual(harness.recorded.logs);
@@ -496,9 +498,9 @@ describe('logging', () => {
 
   it('includes the underlying error text rather than an empty message', () => {
     const harness = loadBundle();
-    harness.doPost({ postData: { contents: '{not json' } });
+    harness.doPost(withToken({ postData: { contents: '{not json' } }));
 
-    const prefix = '[parseEvents] Error: ';
+    const prefix = '[parseDelivery] Error: ';
     const line = harness.recorded.logs.find((entry) => entry.startsWith(prefix));
     expect(line).toBeDefined();
     expect(line?.slice(prefix.length)).not.toBe('');
@@ -847,10 +849,22 @@ describe('LINE API rejection', () => {
 
 describe('script properties', () => {
   it.each([
-    ['SPREADSHEET_ID', { LINE_CHANNEL_ACCESS_TOKEN: 'test-token' }, /"SPREADSHEET_ID"/],
+    [
+      'SPREADSHEET_ID',
+      {
+        LINE_CHANNEL_ACCESS_TOKEN: 'test-token',
+        WEBHOOK_TOKEN: DEFAULT_PROPERTIES.WEBHOOK_TOKEN,
+        BOT_USER_ID: DEFAULT_PROPERTIES.BOT_USER_ID,
+      },
+      /"SPREADSHEET_ID"/,
+    ],
     [
       'LINE_CHANNEL_ACCESS_TOKEN',
-      { SPREADSHEET_ID: DEFAULT_PROPERTIES.SPREADSHEET_ID },
+      {
+        SPREADSHEET_ID: DEFAULT_PROPERTIES.SPREADSHEET_ID,
+        WEBHOOK_TOKEN: DEFAULT_PROPERTIES.WEBHOOK_TOKEN,
+        BOT_USER_ID: DEFAULT_PROPERTIES.BOT_USER_ID,
+      },
       /"LINE_CHANNEL_ACCESS_TOKEN"/,
     ],
   ])('doPost fails loudly when %s is unset', (_name, properties, expected) => {
@@ -860,7 +874,13 @@ describe('script properties', () => {
   });
 
   it('sends nothing at all when the spreadsheet is unreachable', () => {
-    const harness = loadBundle({ properties: { LINE_CHANNEL_ACCESS_TOKEN: 'test-token' } });
+    const harness = loadBundle({
+      properties: {
+        LINE_CHANNEL_ACCESS_TOKEN: 'test-token',
+        WEBHOOK_TOKEN: DEFAULT_PROPERTIES.WEBHOOK_TOKEN,
+        BOT_USER_ID: DEFAULT_PROPERTIES.BOT_USER_ID,
+      },
+    });
 
     expect(() => harness.doPost(textMessageEvent('伍迪'))).toThrow();
     // Silently answering "not found" to every user is the failure mode this
@@ -896,5 +916,118 @@ describe('debug entry points', () => {
     harness.testPost();
 
     expect(replyTexts(harness.recorded)).toContain('https://example.com/woody');
+  });
+});
+
+describe('webhook authentication', () => {
+  const forgedDelivery = (destination: string) => ({
+    destination,
+    events: [
+      {
+        type: 'message',
+        replyToken: 'reply-token-0001',
+        message: { type: 'text', id: '1', text: '伍迪' },
+        source: { type: 'user', userId: 'Uattacker' },
+      },
+    ],
+  });
+
+  it.each([
+    ['no token at all', undefined],
+    ['an empty token', ''],
+    ['a wrong token', 'not-the-token'],
+    ['the token of a different deployment', 'test-webhook-token-2'],
+  ])('rejects a request with %s', (_name, token) => {
+    const harness = loadBundle();
+    const request = {
+      postData: { contents: JSON.stringify(forgedDelivery(DEFAULT_PROPERTIES.BOT_USER_ID)) },
+    };
+    const output = harness.doPost(
+      token === undefined ? request : withToken(request, token)
+    ) as { content: string };
+
+    // Apps Script cannot read request headers, so LINE's x-line-signature is
+    // unavailable; the shared secret in the URL is what stands in for it.
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
+    expect(harness.recorded.sheetReads).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[doPost] rejected: webhook token mismatch');
+    // Still a 200: a rejected request must not make LINE retry or disable the
+    // webhook, and the caller learns nothing from the response.
+    expect(output.content).toBe('{"status":"ok"}');
+  });
+
+  it.each([
+    ['another bot', 'Usomeoneelsesbot'],
+    ['an empty destination', ''],
+    // LINE documents user IDs as U[0-9a-f]{32}: the comparison stays exact so a
+    // future "helpful" normalisation cannot widen it.
+    ['this bot with the case folded', DEFAULT_PROPERTIES.BOT_USER_ID.toUpperCase()],
+  ])('rejects a delivery addressed to %s', (_name, destination) => {
+    const harness = loadBundle();
+    const output = harness.doPost(
+      withToken({ postData: { contents: JSON.stringify(forgedDelivery(destination)) } })
+    ) as { content: string };
+
+    // Defence in depth rather than a second secret: `destination` is the bot's
+    // own user ID and arrives inside the body the caller controls, but a leaked
+    // URL alone is still not enough to forge a delivery.
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[doPost] rejected: destination is not this bot');
+    expect(output.content).toBe('{"status":"ok"}');
+  });
+
+  it('answers a request that carries both the token and this bot as destination', () => {
+    const harness = loadBundle();
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.fetches).toHaveLength(1);
+  });
+
+  it.each([
+    ['WEBHOOK_TOKEN', 'WEBHOOK_TOKEN', /"WEBHOOK_TOKEN"/],
+    ['BOT_USER_ID', 'BOT_USER_ID', /"BOT_USER_ID"/],
+  ])('fails loudly when %s is unset rather than accepting anything', (_name, omit, expected) => {
+    const properties = { ...DEFAULT_PROPERTIES };
+    delete properties[omit];
+    const harness = loadBundle({ properties });
+
+    expect(() => harness.doPost(textMessageEvent('伍迪'))).toThrowError(expected);
+    expect(harness.recorded.fetches).toHaveLength(0);
+  });
+
+  it('rejects the request without reading the body at all', () => {
+    const harness = loadBundle();
+    let bodyReads = 0;
+    harness.doPost({
+      parameter: { token: 'wrong' },
+      postData: {
+        // Counts every look at the body, so this fails if the token is checked
+        // after the delivery is parsed rather than before it.
+        get contents() {
+          bodyReads += 1;
+          return JSON.stringify({ destination: DEFAULT_PROPERTIES.BOT_USER_ID, events: [] });
+        },
+      },
+    });
+
+    expect(bodyReads).toBe(0);
+    expect(harness.recorded.calls).toEqual([]);
+  });
+
+  it('rejects a token that is not a string, even when it wraps the real secret', () => {
+    const harness = loadBundle();
+    // Apps Script puts strings in `e.parameter` and arrays in `e.parameters`.
+    // Narrowing to a string before comparing is what makes a future switch to
+    // `parameters` fail closed instead of accepting `[<secret>]`.
+    const output = harness.doPost({
+      parameter: { token: [DEFAULT_PROPERTIES.WEBHOOK_TOKEN] },
+      postData: { contents: JSON.stringify(forgedDelivery(DEFAULT_PROPERTIES.BOT_USER_ID)) },
+    }) as { content: string };
+
+    expect(harness.recorded.calls).toEqual([]);
+    expect(harness.recorded.logs).toContain('[doPost] rejected: webhook token mismatch');
+    expect(output.content).toBe('{"status":"ok"}');
   });
 });

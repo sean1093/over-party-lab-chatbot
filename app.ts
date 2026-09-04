@@ -2,7 +2,7 @@
 import logService, { errorMessage } from './logService';
 import lineService from './lineService';
 import sheetService from './sheetService';
-import { isConfigurationError } from './properties';
+import properties, { isConfigurationError } from './properties';
 // config
 import CONFIG from './config';
 import WORDING from './wording';
@@ -38,30 +38,49 @@ const requestBody = (e: unknown): string | null => {
 };
 
 /**
- * The events of one webhook delivery, unvalidated.
+ * A query-string parameter of the request, or '' when absent.
+ *
+ * Deliberately `e.parameter`, not `e.parameters`: Apps Script puts the *first*
+ * value of a repeated key in `parameter` (always a string) and every value in
+ * `parameters` (an array). Reading `parameters` would let `?token=x&token=<real>`
+ * pass while anything logging the query string sees only `x`.
+ */
+const requestParameter = (e: unknown, name: string): string => {
+    const parameter = asRecord(asRecord(e)?.parameter);
+    return asString(parameter?.[name]);
+};
+
+/**
+ * One webhook delivery: who it was addressed to, and what happened.
  *
  * LINE may batch several events into a single request, and sends an empty
  * array to verify the webhook URL.
  */
-const parseEvents = (e: unknown): unknown[] => {
+interface WebhookDelivery {
+    destination: string;
+    events: unknown[];
+}
+
+const parseDelivery = (e: unknown): WebhookDelivery => {
     try {
         const contents = requestBody(e);
         if (!contents) {
-            return [];
+            return { destination: '', events: [] };
         }
-        const events = asRecord(JSON.parse(contents))?.events;
+        const body = asRecord(JSON.parse(contents));
+        const events = body?.events;
         if (Array.isArray(events)) {
-            return events;
+            return { destination: asString(body?.destination), events };
         }
         // Distinguishable from the empty array LINE verifies the URL with: a
         // body this bot cannot read at all is a platform change, not a ping.
-        logService.log('[parseEvents] body carries no event array');
-        return [];
+        logService.log('[parseDelivery] body carries no event array');
+        return { destination: asString(body?.destination), events: [] };
     } catch (error) {
         // No script property is read in this block, so no ConfigurationError
         // can originate here.
-        logService.log('[parseEvents] Error: ' + errorMessage(error));
-        return [];
+        logService.log('[parseDelivery] Error: ' + errorMessage(error));
+        return { destination: '', events: [] };
     }
 };
 
@@ -188,19 +207,49 @@ const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent
     sheetService.save({ search: userMessage, user: userId });
 };
 
+/** `{"status":"ok"}` as JSON, the acknowledgement every delivery gets. */
+const acknowledge = (): GoogleAppsScript.Content.TextOutput =>
+    ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(
+        ContentService.MimeType.JSON
+    );
+
 /**
  * Apps Script web app entry point for the LINE webhook.
  *
  * Answers 200 for every payload LINE can send: the platform redelivers on a
- * non-2xx and may suspend a webhook that keeps failing, so an unparseable body
- * or an unanswerable event must not report failure.
+ * non-2xx and may suspend a webhook that keeps failing, so an unparseable body,
+ * an unanswerable event or a rejected request must not report failure.
  *
  * The one exception is a missing script property, which is rethrown below: a
  * deployment that answers "not found" to everyone must not look healthy.
+ *
+ * Authenticity rests on the shared secret in the webhook URL. Apps Script web
+ * apps cannot see request headers, so LINE's `x-line-signature` is not
+ * available here and the `?token=` parameter is what stands in for it: without
+ * it nothing is parsed, read or written.
+ *
+ * The `destination` check is defence in depth, not a second secret. It is the
+ * bot's own user ID, it arrives inside the body the caller controls, and it
+ * cannot be rotated — but it does mean a leaked URL alone is not enough, and it
+ * catches a delivery misrouted from another channel.
  */
 export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput {
     logService.log('[doPost]');
-    for (const event of parseEvents(e)) {
+
+    if (requestParameter(e, 'token') !== properties.webhookToken()) {
+        // No detail in the log and no detail in the response: an unauthenticated
+        // caller learns nothing beyond "something answered".
+        logService.log('[doPost] rejected: webhook token mismatch');
+        return acknowledge();
+    }
+
+    const { destination, events } = parseDelivery(e);
+    if (destination !== properties.botUserId()) {
+        logService.log('[doPost] rejected: destination is not this bot');
+        return acknowledge();
+    }
+
+    for (const event of events) {
         try {
             const message = textMessageEvent(event);
             if (message) {
@@ -214,7 +263,5 @@ export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput 
             logService.log('[doPost] Error: ' + errorMessage(error));
         }
     }
-    return ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(
-        ContentService.MimeType.JSON
-    );
+    return acknowledge();
 }

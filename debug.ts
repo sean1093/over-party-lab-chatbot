@@ -20,7 +20,7 @@ import properties from './properties';
  */
 export function test_post(): void {
   const data = {
-    destination: 'Udebugdestination',
+    destination: properties.botUserId(),
     events: [
       {
         type: 'message',
@@ -38,6 +38,10 @@ export function test_post(): void {
     ]
   };
   const testData = {
+    parameter: {
+      // The deployed webhook URL carries this; doPost rejects requests without it.
+      token: properties.webhookToken()
+    },
     postData: {
       contents: JSON.stringify(data)
     }
