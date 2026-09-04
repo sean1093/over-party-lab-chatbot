@@ -2,7 +2,7 @@
 import logService, { errorMessage } from './logService';
 import lineService from './lineService';
 import sheetService from './sheetService';
-import { isConfigurationError } from './properties';
+import properties, { isConfigurationError } from './properties';
 // config
 import CONFIG from './config';
 import WORDING from './wording';
@@ -37,31 +37,43 @@ const requestBody = (e: unknown): string | null => {
     return typeof postData.contents === 'string' ? postData.contents : null;
 };
 
+/** A query-string parameter of the request, or '' when absent. */
+const requestParameter = (e: unknown, name: string): string => {
+    const parameter = asRecord(asRecord(e)?.parameter);
+    return asString(parameter?.[name]);
+};
+
 /**
- * The events of one webhook delivery, unvalidated.
+ * One webhook delivery: who it was addressed to, and what happened.
  *
  * LINE may batch several events into a single request, and sends an empty
  * array to verify the webhook URL.
  */
-const parseEvents = (e: unknown): unknown[] => {
+interface WebhookDelivery {
+    destination: string;
+    events: unknown[];
+}
+
+const parseDelivery = (e: unknown): WebhookDelivery => {
     try {
         const contents = requestBody(e);
         if (!contents) {
-            return [];
+            return { destination: '', events: [] };
         }
-        const events = asRecord(JSON.parse(contents))?.events;
+        const body = asRecord(JSON.parse(contents));
+        const events = body?.events;
         if (Array.isArray(events)) {
-            return events;
+            return { destination: asString(body?.destination), events };
         }
         // Distinguishable from the empty array LINE verifies the URL with: a
         // body this bot cannot read at all is a platform change, not a ping.
-        logService.log('[parseEvents] body carries no event array');
-        return [];
+        logService.log('[parseDelivery] body carries no event array');
+        return { destination: asString(body?.destination), events: [] };
     } catch (error) {
         // No script property is read in this block, so no ConfigurationError
         // can originate here.
-        logService.log('[parseEvents] Error: ' + errorMessage(error));
-        return [];
+        logService.log('[parseDelivery] Error: ' + errorMessage(error));
+        return { destination: '', events: [] };
     }
 };
 
@@ -188,19 +200,45 @@ const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent
     sheetService.save({ search: userMessage, user: userId });
 };
 
+/** `{"status":"ok"}` as JSON, the acknowledgement every delivery gets. */
+const acknowledge = (): GoogleAppsScript.Content.TextOutput =>
+    ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(
+        ContentService.MimeType.JSON
+    );
+
 /**
  * Apps Script web app entry point for the LINE webhook.
  *
  * Answers 200 for every payload LINE can send: the platform redelivers on a
- * non-2xx and may suspend a webhook that keeps failing, so an unparseable body
- * or an unanswerable event must not report failure.
+ * non-2xx and may suspend a webhook that keeps failing, so an unparseable body,
+ * an unanswerable event or a rejected request must not report failure.
  *
  * The one exception is a missing script property, which is rethrown below: a
  * deployment that answers "not found" to everyone must not look healthy.
+ *
+ * Authenticity is checked twice before anything is read or written. Apps Script
+ * web apps cannot see request headers, so LINE's `x-line-signature` is not
+ * available here — the webhook URL carries a shared secret instead, and the
+ * payload's `destination` has to be this bot. Both are unguessable, so a
+ * forged request cannot reach the spreadsheet or the Messaging API.
  */
 export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput {
     logService.log('[doPost]');
-    for (const event of parseEvents(e)) {
+
+    if (requestParameter(e, 'token') !== properties.webhookToken()) {
+        // No detail in the log and no detail in the response: an unauthenticated
+        // caller learns nothing beyond "something answered".
+        logService.log('[doPost] rejected: webhook token mismatch');
+        return acknowledge();
+    }
+
+    const { destination, events } = parseDelivery(e);
+    if (destination !== properties.botUserId()) {
+        logService.log('[doPost] rejected: destination is not this bot');
+        return acknowledge();
+    }
+
+    for (const event of events) {
         try {
             const message = textMessageEvent(event);
             if (message) {
@@ -214,7 +252,5 @@ export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput 
             logService.log('[doPost] Error: ' + errorMessage(error));
         }
     }
-    return ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(
-        ContentService.MimeType.JSON
-    );
+    return acknowledge();
 }

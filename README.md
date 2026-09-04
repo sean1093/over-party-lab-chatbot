@@ -169,6 +169,8 @@ Open the Apps Script project (`npx clasp open-script`) and go to
 |---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` | Channel access token from LINE Developers Console → your channel → Messaging API |
 | `SPREADSHEET_ID` | The `{SHEET_ID}` part of `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit` |
+| `WEBHOOK_TOKEN` | A random secret you generate, e.g. `openssl rand -hex 24`. It is appended to the webhook URL and every request must carry it |
+| `BOT_USER_ID` | This bot's own user ID, shown as **Your user ID** in LINE Developers Console → your channel → Basic settings. Every delivery's `destination` must equal it |
 | `DEBUG_USER_ID` | Your own LINE user ID; only used by `test_send()` |
 
 If a property is missing, the execution fails with
@@ -230,21 +232,30 @@ npx clasp deploy
 
 1. After deployment, get your web app URL:
    ```bash
-   clasp deploy
+   npx clasp deploy
    # Copy the Web app URL from the output
    ```
 
-2. Configure LINE Messaging API:
+2. Append the shared secret to it. Apps Script web apps cannot read request
+   headers, so LINE's `x-line-signature` cannot be verified here; the secret in the
+   URL is what authenticates the caller instead:
+   ```
+   https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<WEBHOOK_TOKEN>
+   ```
+
+3. Configure LINE Messaging API:
    - Go to [LINE Developers Console](https://developers.line.biz/console/)
    - Select your Messaging API channel
    - Navigate to **Messaging API** tab
-   - Set **Webhook URL** to your Google Apps Script web app URL
+   - Set **Webhook URL** to the URL from step 2, **including `?token=`**
    - Enable **Use webhook**
    - Disable **Auto-reply messages** (optional, recommended)
 
-3. Verify webhook:
+4. Verify webhook:
    - Click **Verify** button in LINE Console
-   - Should return success message
+   - Should return success message. A request without the token, or a delivery whose
+     `destination` is not `BOT_USER_ID`, is answered `200` and logged as rejected
+     without touching the spreadsheet or the Messaging API
 
 ## Development
 

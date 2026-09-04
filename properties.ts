@@ -6,6 +6,8 @@
  *
  *   LINE_CHANNEL_ACCESS_TOKEN  Messaging API channel access token
  *   SPREADSHEET_ID             ID of the spreadsheet holding the cocktail data
+ *   WEBHOOK_TOKEN              shared secret appended to the webhook URL
+ *   BOT_USER_ID                this bot's own user ID, as sent in `destination`
  *   DEBUG_USER_ID              LINE user ID used by `test_send()` (debug only)
  *
  * Every accessor is a function so that a missing property fails at the point of
@@ -14,6 +16,8 @@
 export const PROPERTY_KEYS = {
   channelAccessToken: 'LINE_CHANNEL_ACCESS_TOKEN',
   spreadsheetId: 'SPREADSHEET_ID',
+  webhookToken: 'WEBHOOK_TOKEN',
+  botUserId: 'BOT_USER_ID',
   debugUserId: 'DEBUG_USER_ID',
 } as const;
 
@@ -47,6 +51,8 @@ const read = (key: string): string => {
 const properties = {
   channelAccessToken: (): string => read(PROPERTY_KEYS.channelAccessToken),
   spreadsheetId: (): string => read(PROPERTY_KEYS.spreadsheetId),
+  webhookToken: (): string => read(PROPERTY_KEYS.webhookToken),
+  botUserId: (): string => read(PROPERTY_KEYS.botUserId),
   debugUserId: (): string => read(PROPERTY_KEYS.debugUserId),
 };
 

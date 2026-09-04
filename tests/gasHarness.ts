@@ -141,6 +141,8 @@ export interface Harness {
 export const DEFAULT_PROPERTIES: Record<string, string> = {
   LINE_CHANNEL_ACCESS_TOKEN: 'test-token',
   SPREADSHEET_ID: 'test-spreadsheet-id',
+  WEBHOOK_TOKEN: 'test-webhook-token',
+  BOT_USER_ID: 'Ubotdestination',
   DEBUG_USER_ID: 'Udebuguser',
 };
 
@@ -373,8 +375,16 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
   };
 }
 
+/**
+ * Attaches the shared secret the webhook URL carries, so a request looks
+ * authentic. Pass a different token to exercise the rejection path.
+ */
+export function withToken(request: object, token = DEFAULT_PROPERTIES.WEBHOOK_TOKEN): unknown {
+  return { ...request, parameter: { token } };
+}
+
 export function webhookBody(events: unknown[], destination = 'Ubotdestination'): unknown {
-  return { postData: { contents: JSON.stringify({ destination, events }) } };
+  return withToken({ postData: { contents: JSON.stringify({ destination, events }) } });
 }
 
 /**
