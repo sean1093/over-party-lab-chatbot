@@ -40,12 +40,18 @@ const parseLineMessage = (e: unknown): ReceiveMessage | null => {
             const event = body.events?.[0];
             if (event && event.message && event.source) {
                 const { replyToken, message, source } = event;
+                if (!replyToken) {
+                    // Standby-mode events carry no reply token. Manufacturing
+                    // an empty one only spends the execution on a 400.
+                    logService.log('[parseLineMessage] event has no reply token');
+                    return null;
+                }
                 // A non-text message (sticker, image) carries no `text`. Today
                 // that undefined flows through into the lookup and the
                 // analytics row; #14 is what filters those events out.
                 const userMessage = message.text as string;
                 return {
-                    replyToken: replyToken ?? '',
+                    replyToken,
                     userId: source.userId ?? '',
                     userMessage
                 };
@@ -70,6 +76,8 @@ const recommendedNames = (recommendation: string, nameList: string[]): string[] 
     recommendation
         .split(',')
         .map((entry) => nameList[parseInt(entry, 10)])
+        // Blank names are dropped by the message builder, which owns payload
+        // validity; here only missing indices have to be filtered out.
         .filter((name): name is string => Boolean(name));
 
 /** The reply for one incoming text message. */
@@ -81,7 +89,10 @@ const buildReply = (userMessage: string): Message[] => {
         ['link', 'detail']
     );
 
-    if (drink?.link) {
+    if (drink) {
+        // Matched: reply even when a cell is empty — a cocktail is often added
+        // before its video exists, and its description is still the best
+        // answer. `textMessages` drops the empty parts.
         return textMessages(userMessage, drink.detail, drink.link);
     }
 

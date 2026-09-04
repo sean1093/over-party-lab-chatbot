@@ -85,6 +85,18 @@ export interface SheetService {
   save: (data: SaveData) => void;
 }
 
+export interface SendResult {
+  ok: boolean;
+  status: number;
+  body: string;
+}
+
+/** The subset of `lineService` the suite drives directly. */
+export interface LineService {
+  reply: (replyToken: string, messages: object[]) => SendResult;
+  push: (to: string, messages: object[]) => SendResult;
+}
+
 export interface HarnessOptions {
   /** Sheet tab name -> rows *including the header row*, as the real tabs have. */
   sheets?: Record<string, SheetRow[]>;
@@ -107,6 +119,8 @@ export interface Harness {
   testSend: () => unknown;
   /** The bundle's `sheetService`, for contracts `doPost` cannot reach alone. */
   sheetService: SheetService;
+  /** The bundle's `lineService`, for the same reason. */
+  lineService: LineService;
   recorded: Recorded;
 }
 
@@ -240,13 +254,17 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
     return (fn as (...called: unknown[]) => unknown)(...args);
   };
 
-  const namespace = vm.runInContext('OverPartyLab', context) as { sheetService: SheetService };
+  const namespace = vm.runInContext('OverPartyLab', context) as {
+    sheetService: SheetService;
+    lineService: LineService;
+  };
 
   return {
     doPost: (event: unknown) => callGlobal('doPost', event),
     testPost: () => callGlobal('test_post'),
     testSend: () => callGlobal('test_send'),
     sheetService: namespace.sheetService,
+    lineService: namespace.lineService,
     recorded,
   };
 }

@@ -1,6 +1,7 @@
 import logService, { errorMessage } from './logService';
 import CONFIG from './config';
 import properties, { isConfigurationError } from './properties';
+import { LINE_LIMITS } from './lineMessage';
 import type { Message } from './lineMessage';
 
 interface SendResult {
@@ -39,6 +40,25 @@ const request = (endpoint: string, payload: object): SendResult => {
   return { ok: true, status, body };
 };
 
+/**
+ * Enforces the 1..5 message objects the API requires. An empty array is a
+ * caller bug, but sending it would waste the single-use reply token on a 400.
+ */
+const sendable = (endpoint: string, messages: Message[]): Message[] | null => {
+  if (messages.length === 0) {
+    logService.log(`[lineService.${endpoint}] Nothing to send`);
+    return null;
+  }
+  if (messages.length > LINE_LIMITS.messagesPerRequest) {
+    logService.log(
+      `[lineService.${endpoint}] Trimmed ${messages.length} messages to ` +
+        `${LINE_LIMITS.messagesPerRequest}`
+    );
+    return messages.slice(0, LINE_LIMITS.messagesPerRequest);
+  }
+  return messages;
+};
+
 const lineService = {
   /**
    * Answers a webhook event with the Reply API.
@@ -51,8 +71,10 @@ const lineService = {
    * this has to happen inside the same execution.
    */
   reply: (replyToken: string, messages: Message[]): SendResult => {
+    const payload = sendable('reply', messages);
+    if (!payload) return { ok: false, status: 0, body: 'no messages' };
     try {
-      return request('reply', { replyToken, messages });
+      return request('reply', { replyToken, messages: payload });
     } catch (error) {
       // A missing script property must fail the execution, not degrade into a
       // silently unanswered webhook.
@@ -67,8 +89,10 @@ const lineService = {
    * it is only used where no reply token exists (`debug.ts`).
    */
   push: (to: string, messages: Message[]): SendResult => {
+    const payload = sendable('push', messages);
+    if (!payload) return { ok: false, status: 0, body: 'no messages' };
     try {
-      return request('push', { to, messages });
+      return request('push', { to, messages: payload });
     } catch (error) {
       if (isConfigurationError(error)) throw error;
       logService.log('[lineService.push] Error: ' + errorMessage(error));

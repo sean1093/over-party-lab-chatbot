@@ -77,7 +77,13 @@ const sheetService = {
 
             let found = -1;
             for (const column of Object.keys(where) as ColumnKey[]) {
-                found = indexOfValue(columnData(sheet, rowCount, column), formatText(where[column]));
+                const value = formatText(where[column]);
+                // An empty search value would match the first blank cell in the
+                // column and leak an unrelated row.
+                if (!value) {
+                    continue;
+                }
+                found = indexOfValue(columnData(sheet, rowCount, column), value);
                 if (found !== -1) {
                     break;
                 }

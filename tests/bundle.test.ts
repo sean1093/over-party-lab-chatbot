@@ -269,6 +269,180 @@ describe('sheet access stays inside the grid', () => {
   });
 });
 
+describe('rows with empty cells', () => {
+  it('still answers with the description when the matched row has no link', () => {
+    // A cocktail is often added before its video exists. Branching on the
+    // `link` cell instead of on the row would drop that description and send
+    // "not found" for a drink that is in the sheet.
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          ['新品調酒', 'NewDrink', '', '尚未有影片的新品'],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('新品調酒'));
+
+    expect(replyTexts(harness.recorded)).toEqual(['新品調酒', '尚未有影片的新品']);
+  });
+
+  it('never matches a blank cell, which would leak an unrelated row', () => {
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          ['', '', 'https://example.com/orphan', '孤兒列'],
+          ['伍迪', 'Woody', 'https://example.com/woody', '威士忌基底'],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    // Normalises to the empty string, which equals the blank name cell.
+    harness.doPost(textMessageEvent('   '));
+
+    expect(replyTexts(harness.recorded)).not.toContain('https://example.com/orphan');
+    expect(replyTexts(harness.recorded)).toContain('找不到您要的調酒，不如來逛逛我們的頻道吧！');
+  });
+
+  it('reads nothing from a tab that holds only a header row', () => {
+    // getSheetValues with numRows < 1 throws in real Sheets; the error would be
+    // swallowed and every lookup would degrade into "not found".
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [['name', 'nameen', 'link', 'detail']],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('伍迪'));
+
+    expect(harness.recorded.logs.filter((line) => line.includes('out of bounds'))).toEqual([]);
+    expect(harness.sheetService.columnValues('DRINK_LIST', 'name')).toEqual([]);
+    expect(harness.sheetService.findRow('DRINK_LIST', { name: '伍迪' }, ['link'])).toBeNull();
+  });
+
+  it('stringifies numeric cells, which the message objects require', () => {
+    // Sheets returns a Number for a numerically-formatted cell, and `text` and
+    // `label` are String properties: `"text": 2024` fails the whole request.
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          [7, '007', 'https://example.com/007', 2024],
+        ],
+        ELEMENT_MAPPING: [
+          ['name', 'nameen', 'link', 'detail', 'recommendation'],
+          ['伏特加', 'Vodka', '', '', '0'],
+        ],
+        USER_ACTION,
+      },
+    });
+
+    harness.doPost(textMessageEvent('007'));
+    harness.doPost(textMessageEvent('伏特加'));
+
+    for (const request of harness.recorded.fetches) {
+      for (const message of request.payload.messages) {
+        if (message.type === 'text') expect(typeof message.text).toBe('string');
+        for (const action of message.template?.actions ?? []) {
+          expect(typeof action.label).toBe('string');
+          expect(typeof action.text).toBe('string');
+        }
+      }
+    }
+
+    expect(harness.recorded.fetches[0].payload.messages[1].text).toBe('2024');
+    expect(harness.recorded.fetches[1].payload.messages[0].template?.actions).toEqual([
+      { type: 'message', label: '7', text: '7' },
+    ]);
+  });
+});
+
+describe('reply tokens', () => {
+  it('sends nothing for an event without a reply token', () => {
+    // Standby-mode events carry none; posting `replyToken: ""` only spends the
+    // execution on an "Invalid reply token" 400.
+    const harness = loadBundle();
+    harness.doPost(
+      webhookBody([
+        {
+          type: 'message',
+          message: { type: 'text', id: '1', text: '伍迪' },
+          source: { type: 'user', userId: 'Uuser0001' },
+        },
+      ])
+    );
+
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.writes).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[parseLineMessage] event has no reply token');
+  });
+
+  it('clamps an oversized cell instead of failing the whole reply', () => {
+    const harness = loadBundle({
+      sheets: {
+        DRINK_LIST: [
+          ['name', 'nameen', 'link', 'detail'],
+          ['長篇', 'Long', 'https://example.com/long', 'ㄅ'.repeat(6000)],
+        ],
+        ELEMENT_MAPPING: [['name', 'nameen', 'link', 'detail', 'recommendation']],
+        USER_ACTION,
+      },
+    });
+    harness.doPost(textMessageEvent('長篇'));
+
+    const { messages } = harness.recorded.fetches[0].payload;
+    expect(messages).toHaveLength(3);
+    for (const message of messages) {
+      expect((message.text ?? '').length).toBeLessThanOrEqual(5000);
+    }
+    expect(messages[2].text).toBe('https://example.com/long');
+  });
+});
+
+describe('debug push entry point', () => {
+  it('test_send fails loudly when the channel access token is unset', () => {
+    // push swallows runtime errors to keep the bot answering; a missing script
+    // property must stay the exception, or a misconfigured deployment looks
+    // healthy from the Apps Script editor.
+    const harness = loadBundle({
+      properties: {
+        SPREADSHEET_ID: DEFAULT_PROPERTIES.SPREADSHEET_ID,
+        DEBUG_USER_ID: DEFAULT_PROPERTIES.DEBUG_USER_ID,
+      },
+    });
+
+    expect(() => harness.testSend()).toThrowError(/"LINE_CHANNEL_ACCESS_TOKEN"/);
+    expect(harness.recorded.fetches).toHaveLength(0);
+  });
+});
+
+describe('message count bounds', () => {
+  it('sends nothing rather than an empty reply, which LINE rejects', () => {
+    // The Reply API requires 1..5 message objects. Spending the single-use
+    // reply token on a guaranteed 400 would leave the user unanswered.
+    const harness = loadBundle();
+    const result = harness.lineService.reply('reply-token-0001', []);
+
+    expect(result.ok).toBe(false);
+    expect(harness.recorded.fetches).toHaveLength(0);
+    expect(harness.recorded.logs).toContain('[lineService.reply] Nothing to send');
+  });
+
+  it('trims to the 5 message objects the API accepts', () => {
+    const harness = loadBundle();
+    const messages = Array.from({ length: 7 }, (_, i) => ({ type: 'text', text: `m${i}` }));
+    harness.lineService.reply('reply-token-0001', messages);
+
+    expect(harness.recorded.fetches[0].payload.messages).toHaveLength(5);
+    expect(harness.recorded.logs).toContain('[lineService.reply] Trimmed 7 messages to 5');
+  });
+});
+
 describe('LINE API rejection', () => {
   it('does not let a failed request escape into the webhook response', () => {
     const harness = loadBundle({ responseCode: 400, responseBody: '{"message":"bad request"}' });
