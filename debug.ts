@@ -20,15 +20,20 @@ import properties from './properties';
  */
 export function test_post(): void {
   const data = {
+    destination: 'Udebugdestination',
     events: [
       {
+        type: 'message',
+        replyToken: 'test-reply-token',
         message: {
+          type: 'text',
+          id: '1',
           text: 'woody'  // Change this to test different cocktail names
         },
         source: {
+          type: 'user',
           userId: properties.debugUserId()
-        },
-        replyToken: 'test-reply-token'
+        }
       }
     ]
   };

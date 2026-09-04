@@ -201,6 +201,17 @@ export function loadBundle(options: HarnessOptions = {}): Harness {
 
   const sandbox: Record<string, unknown> = {
     console: { log: record(recorded.logs) },
+    ContentService: {
+      MimeType: { JSON: 'application/json', TEXT: 'text/plain' },
+      createTextOutput: (content: string) => ({
+        content,
+        mimeType: 'text/plain',
+        setMimeType(mimeType: string) {
+          this.mimeType = mimeType;
+          return this;
+        },
+      }),
+    },
     Logger: { log: record(recorded.loggerLogs) },
     Date: frozenTime === undefined ? Date : FrozenDate,
     PropertiesService: {

@@ -9,7 +9,7 @@ import WORDING from './wording';
 import { recommendationMessage, textMessages } from './lineMessage';
 import type { Message } from './lineMessage';
 
-interface ReceiveMessage {
+interface TextMessageEvent {
     replyToken: string;
     userId: string;
     userMessage: string;
@@ -30,39 +30,54 @@ const requestBody = (e: unknown): string | null => {
     return typeof postData.contents === 'string' ? postData.contents : null;
 };
 
-const parseLineMessage = (e: unknown): ReceiveMessage | null => {
+/**
+ * The events of one webhook delivery.
+ *
+ * LINE may batch several events into a single request, and sends an empty
+ * array to verify connectivity.
+ */
+const parseEvents = (e: unknown): WebhookEvent[] => {
     try {
         const contents = requestBody(e);
-        if (contents) {
-            // Shape asserted rather than validated: the payload comes from the
-            // LINE platform and every field is read defensively below.
-            const body = JSON.parse(contents) as { events?: WebhookEvent[] };
-            const event = body.events?.[0];
-            if (event && event.message && event.source) {
-                const { replyToken, message, source } = event;
-                if (!replyToken) {
-                    // Standby-mode events carry no reply token. Manufacturing
-                    // an empty one only spends the execution on a 400.
-                    logService.log('[parseLineMessage] event has no reply token');
-                    return null;
-                }
-                // A non-text message (sticker, image) carries no `text`. Today
-                // that undefined flows through into the lookup and the
-                // analytics row; #14 is what filters those events out.
-                const userMessage = message.text as string;
-                return {
-                    replyToken,
-                    userId: source.userId ?? '',
-                    userMessage
-                };
-            }
+        if (!contents) {
+            return [];
         }
+        // Shape asserted rather than validated: the payload comes from the
+        // LINE platform and every field is read defensively below.
+        const body = JSON.parse(contents) as { events?: WebhookEvent[] };
+        return Array.isArray(body.events) ? body.events : [];
     } catch (error) {
         // No script property is read in this block, so no ConfigurationError
         // can originate here.
-        logService.log('[parseLineMessage] Error: ' + errorMessage(error));
+        logService.log('[parseEvents] Error: ' + errorMessage(error));
+        return [];
     }
-    return null;
+};
+
+/**
+ * A text message this bot can answer, or null.
+ *
+ * Everything else is skipped rather than guessed at: a sticker or image event
+ * has a `message` object with no `text`, and letting that through means an
+ * empty search hitting the sheet and an empty row in the analytics tab.
+ */
+const textMessageEvent = (event: WebhookEvent): TextMessageEvent | null => {
+    if (event.type !== 'message' || event.message?.type !== 'text') {
+        logService.log(`[doPost] skipping ${event.type ?? 'unknown'}/${event.message?.type ?? '-'}`);
+        return null;
+    }
+    if (!event.replyToken) {
+        // Standby-mode events carry no reply token. Manufacturing an empty one
+        // only spends the execution on a 400.
+        logService.log('[doPost] event has no reply token');
+        return null;
+    }
+    const userMessage = (event.message.text ?? '').trim();
+    if (!userMessage) {
+        logService.log('[doPost] empty message text');
+        return null;
+    }
+    return { replyToken: event.replyToken, userId: event.source?.userId ?? '', userMessage };
 };
 
 /**
@@ -120,31 +135,39 @@ const buildReply = (userMessage: string): Message[] => {
     return textMessages(userMessage, WORDING.not_found, CONFIG.OVERPARTYLAB.IG);
 };
 
-// default apps script post method
-export default function doPost(e: unknown): void {
-    try {
-        logService.log('[doPost]');
-        const parsedMessage = parseLineMessage(e);
+/** Answers one text message event. */
+const handleTextMessage = ({ replyToken, userId, userMessage }: TextMessageEvent): void => {
+    // save user action
+    sheetService.save({ search: userMessage, user: userId });
 
-        if (!parsedMessage) {
-            logService.log('[doPost] Invalid message format');
-            return;
+    const messages = buildReply(userMessage);
+    logService.log(messages);
+    lineService.reply(replyToken, messages);
+};
+
+/**
+ * Apps Script web app entry point for the LINE webhook.
+ *
+ * Always answers 200: the LINE platform retries or disables a webhook that
+ * reports failure, and one unanswerable event must not do that.
+ */
+export default function doPost(e: unknown): GoogleAppsScript.Content.TextOutput {
+    logService.log('[doPost]');
+    for (const event of parseEvents(e)) {
+        try {
+            const message = textMessageEvent(event);
+            if (message) {
+                handleTextMessage(message);
+            }
+        } catch (error) {
+            // Surfaced as a failed execution so a misconfigured deployment is
+            // obvious rather than silently answering every user "not found".
+            if (isConfigurationError(error)) throw error;
+            // One bad event must not abort the rest of the batch.
+            logService.log('[doPost] Error: ' + errorMessage(error));
         }
-
-        const { replyToken, userMessage, userId } = parsedMessage;
-
-        // save user action
-        sheetService.save({
-            search: userMessage,
-            user: userId
-        });
-
-        const messages = buildReply(userMessage);
-        logService.log(messages);
-        lineService.reply(replyToken, messages);
-    } catch (error) {
-        // Surfaced as a failed execution so a misconfigured deployment is obvious.
-        if (isConfigurationError(error)) throw error;
-        logService.log('[doPost] Error: ' + errorMessage(error));
     }
+    return ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(
+        ContentService.MimeType.JSON
+    );
 }
